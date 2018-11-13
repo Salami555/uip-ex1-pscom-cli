@@ -20,12 +20,69 @@
  * - prefer qDebug, qInfo, qWarning, qCritical, and qFatal for verbosity and console output.
  */
 
+QDebug _debug() {
+    return qDebug().noquote();
+}
+QDebug _info() {
+    return qInfo().noquote();
+}
+QDebug _warn() {
+    return qWarning().noquote();
+}
+void abnormalExit(const QString & message, int exitCode = 1) {
+    qCritical().noquote() << message << "\n";
+    std::exit(exitCode);
+}
+void fatalExit(const QString & message, int terminationCode = -1) {
+    qFatal(message.toLocal8Bit().data());
+    std::exit(terminationCode);
+}
+
+bool userConfirmation(const QString & message) {
+    qCritical().noquote() << message << "[y/n] ";
+    std::string input;
+    std::cin >> input;
+    switch(input[0]) {
+        case 'y':
+            return true;
+        case 'n':
+            return false;
+        default:
+            _warn() << QString("Unknown input \"%1\" - aborting!").arg(input.data());
+            return false;
+    }
+}
+
+const int progressBarWidth = 42;
+const char
+    filledProgress = '#',
+    emptyProgress = '.';
+void drawProgressBar(double progress, bool newLine = false) {
+    if(progress < 0) progress = 0;
+    if(progress > 1) progress = 1;
+
+    const int width = (int) (progressBarWidth * progress);
+    QTextStream(stdout) << QString("[%1] %L2%")
+        .arg(QString(filledProgress).repeated(width), -progressBarWidth, emptyProgress)
+        .arg(progress * 100, 5, 'f', 1);
+    if(newLine)
+        QTextStream(stdout) << '\n';
+}
+void clearProgressBar() {
+    QTextStream(stdout) << "\r"
+        << QString(" ").repeated(progressBarWidth + 9) // "[" + bar{width} + "] " + number{5} + "%"
+        << "\r";
+}
+
 namespace lib_utils {
     QStringList supportedFormats() {
         return pscom::sf();
     }
 
     namespace io_ops {
+        bool recursive = false;
+        bool dryRun = false;
+
         bool isPathExistingDirectory(const QString & path) {
             return pscom::de(path);
         }
@@ -35,21 +92,58 @@ namespace lib_utils {
         bool isPathExisting(const QString & path) {
             return !pscom::ne(path);
         }
-        QString fileExtension(const QString & path) {
-            if(!isPathExistingFile(path)) {
-                throw "";
+
+        namespace filepath_ops {
+            QString fileExtension(const QString & filepath) {
+                if(!isPathExistingFile(filepath)) {
+                    throw "file not found";
+                }
+                return pscom::fs(filepath);
             }
-            return pscom::fs(path);
-        }
-        QString replaceFileExtensionIfSupported(const QString & path, const QString & extension) {
-            if(!supportedFormats().contains(extension)) {
-                throw "";
+            QString pathSetFileExtension(const QString & filepath, const QString & extension) {
+                if(!supportedFormats().contains(extension)) {
+                    throw "unsupported file format";
+                }
+                return pscom::cs(filepath, extension);
             }
-            return pscom::cs(path, extension);
+            QString pathSetDatedFileBaseName(const QString & filepath, const QString & dateTimeFormat, const QDateTime & dateTime) {
+                return pscom::fn(filepath, dateTime, dateTimeFormat);
+            }
+            QString pathInsertDatedDirectory(const QString & filepath, const QString & dateFormat, const QDate & date) {
+                return pscom::fp(filepath, date, dateFormat);
+            }
         }
 
+        bool moveFiles(const QStringList & filepaths, std::function<void (const QString &, bool, int, int)> fileCompletionCallback) {
+            if(filepaths.empty())
+                return true;
+            
+            QStringList unsuccessful;
+            const int total = filepaths.count();
+            for(int i = 0; i < total; ++i) {
+                const QString filepath = filepaths[i];
+                const int pos = i + 1;
+                bool success = false;
+                clearProgressBar();
+                _debug() << QString("%1) Moving %2").arg(pos).arg(filepath);
+                drawProgressBar((pos-1)/total);
+                // todo move
+                clearProgressBar();
+                fileCompletionCallback(filepath, success, pos, total);
+                _info() << QString("%1) Moved %2").arg(pos).arg(filepath);
+                drawProgressBar(pos/total);
+                if(!success) {
+                    unsuccessful << filepath;
+                }
+            }
+            clearProgressBar();
+            // drawProgressBar(1.0, true);
+            if(!unsuccessful.empty()) {
+                _warn() << QString("Unsuccessfully moved files: %1").arg(unsuccessful.count());
+            }
+            return unsuccessful.empty();
+        }
     }
-
 }
 
 static const QString APP_NAME("pscom-cli");
@@ -75,62 +169,12 @@ static const QCommandLineOption verboseFlag("verbose", "Sets the output to verbo
 static const QCommandLineOption suppressWarningsFlag("suppress-warnings", "Sets the output to verbose log level.");
 static const QCommandLineOption supportedFormatsFlag("supported-formats", "Lists the supported file formats.");
 
-QDebug _debug() {
-    return qDebug().noquote();
-}
-QDebug _info() {
-    return qInfo().noquote();
-}
-QDebug _warn() {
-    return qWarning().noquote();
-}
-QDebug _crit() {
-    return qCritical().noquote();
-}
-void critExit(const QString & message) {
-    Logging::quiet = false;
-    _crit() << message << "\n";
-    std::exit(1);
-}
-bool userConfirmation(const QString & message) {
-    _crit() << message << "[y/n] ";
-    std::string input;
-    std::cin >> input;
-    switch(input[0]) {
-        case 'y':
-            return true;
-        case 'n':
-            return false;
-        default:
-            _warn() << QString("Unknown input \"%1\" - aborting!").arg(input.data());
-            return false;
-    }
-}
-
-const int progressBarWidth = 42;
-const char
-    filledProgress = '#',
-    emptyProgress = '.';
-void drawProgressBar(double progress) {
-    if(progress < 0) progress = 0;
-    if(progress > 1) progress = 1;
-
-    const int width = (int) (progressBarWidth * progress);
-    QTextStream(stdout) << QString("[%1] %L2%")
-        .arg(QString(filledProgress).repeated(width), -progressBarWidth, emptyProgress)
-        .arg(progress * 100, 5, 'f', 1);
-}
-void clearProgressBar() {
-    QTextStream(stdout) << "\r"
-        << QString(" ").repeated(progressBarWidth + 9) // "[" + bar{width} + "] " + number{5} + "%"
-        << "\r";
-}
-
 void initParserAndLogging(const QCoreApplication & app, QCommandLineParser & parser) {
 	parser.addVersionOption();
 	parser.addHelpOption();
     parser.addOptions({quietFlag, verboseFlag, suppressWarningsFlag});
-    parser.addPositionalArgument("command", "The pscom command to execute.", "<command> [<args>]");
+    parser.addPositionalArgument("command", "pscom command to execute", "<command> [<args>]");
+    parser.addPositionalArgument("path", "directory path", "<path>");
     if(app.arguments().count() <= 1) {
         _info() << QString("Welcome to %1.").arg(APP_NAME);
         // exit with error code 1 because the user didn't supply any arguments
@@ -141,14 +185,9 @@ void initParserAndLogging(const QCoreApplication & app, QCommandLineParser & par
     Logging::quiet = parser.isSet(quietFlag);
     Logging::verbose = parser.isSet(verboseFlag);
     if(Logging::quiet && Logging::verbose) {
-        std::exit(-1);
-        // critExit("invalid arguments: --verbose cannot be set at the same time with --quiet");
+        abnormalExit("invalid arguments: --verbose cannot be set at the same time with --quiet");
     }
     Logging::suppressWarnings = parser.isSet(suppressWarningsFlag);
-    // _debug()
-    //     << QString("Quiet=%1").arg(Logging::quiet)
-    //     << QString("Verbose=%2").arg(Logging::verbose)
-    //     << QString("Suppress-Warnings=%3").arg(Logging::suppressWarnings);
 }
 
 void showSupportedFormats() {
@@ -160,6 +199,11 @@ void showSupportedFormats() {
     }
 }
 
+static const QCommandLineOption listRecursiveFlag("recursive");
+static const QCommandLineOption listFilterDateAfter("after", "Filters the files beeing created after the given date.", "<DATETIME>");
+static const QCommandLineOption listFilterDateBefore("before", "Filters the files beeing created before the given date.", "<DATETIME>");
+static const QCommandLineOption listFilterRegex("match", "Matches the filenames against the given regex.", "<REGEX>");
+
 int main(int argc, char *argv[])
 {
     qInstallMessageHandler(VerbosityHandler);
@@ -170,14 +214,11 @@ int main(int argc, char *argv[])
     QCommandLineParser parser;
     parser.addOptions({supportedFormatsFlag});
     initParserAndLogging(app, parser);
-    // _debug() << QString("ExecutionDirectory=%1").arg(app.applicationDirPath());
     
     if(parser.isSet(supportedFormatsFlag)) {
         if(Logging::quiet) {
-            return -1;
-            // critExit("invalid arguments: --quiet suppresses output of --supported-formats");
+            abnormalExit("invalid arguments: --quiet suppresses output of --supported-formats");
         }
-        // _debug() << QString("SupportedFormatsFlag=1");
         showSupportedFormats();
         return 0;
     }
@@ -187,6 +228,30 @@ int main(int argc, char *argv[])
         // exit with error code 1 because the user didn't supply any arguments
         parser.showHelp(1);
     }
+    const auto command = args[0].toLower();
+    
+    lib_utils::io_ops::moveFiles({"./a.txt"}, [](const QString & filepath, bool success, int i, int total) {
+        _debug() << filepath << success << i << total;
+    });
+    // if(command == "list") {
+        
+    // } else if(command == "copy") {
+
+    // } else if(command == "move") {
+
+    // } else if(command == "rename") {
+        
+    // } else if(command == "group") {
+        
+    // } else if(command == "shrink") {
+        
+    // } else if(command == "format") {
+        
+    // } else if(command == "quality") {
+        
+    // }
+    // process supplied arguments
+	// parser.process(app);
 
     return app.exec();
 }
