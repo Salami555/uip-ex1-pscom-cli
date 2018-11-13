@@ -48,7 +48,7 @@ bool userConfirmation(const QString & message) {
         case 'n':
             return false;
         default:
-            _warn() << QString("Unknown input \"%1\" - aborting!").arg(input.data());
+            _warn() << QString("Unknown input \"%1\" - assuming no").arg(input.data());
             return false;
     }
 }
@@ -146,8 +146,90 @@ namespace lib_utils {
     }
 }
 
+struct Command {
+    std::function<void (QCommandLineParser &)> parameterInitializer;
+    std::function<int (QCommandLineParser &)> commandHandler;
+};
+
 static const QString APP_NAME("pscom-cli");
 static const QVersionNumber APP_VERSION(1, 0, 0);
+static const QMap<QString, Command> commands({
+    std::make_pair("list", Command {
+        [](QCommandLineParser & parser) {
+            _debug() << "init list";
+        },
+        [](QCommandLineParser & parser) {
+            _debug() << "list";
+            return 0;
+        }
+    }),
+    std::make_pair("copy", Command {
+        [](QCommandLineParser & parser) {
+            _debug() << "init copy";
+        },
+        [](QCommandLineParser & parser) {
+            _debug() << "copy";
+            // lib_utils::io_ops::moveFiles({"./a.txt"}, [](const QString & filepath, bool success, int i, int total) {
+            //     _debug() << filepath << success << i << total;
+            // });
+            return 0;
+        }
+    }),
+    std::make_pair("move", Command {
+        [](QCommandLineParser & parser) {
+            _debug() << "init move";
+        },
+        [](QCommandLineParser & parser) {
+            _debug() << "move";
+            return 0;
+        }
+    }),
+    std::make_pair("rename", Command {
+        [](QCommandLineParser & parser) {
+            _debug() << "init rename";
+        },
+        [](QCommandLineParser & parser) {
+            _debug() << "rename";
+            return 0;
+        }
+    }),
+    std::make_pair("group", Command {
+        [](QCommandLineParser & parser) {
+            _debug() << "init group";
+        },
+        [](QCommandLineParser & parser) {
+            _debug() << "group";
+            return 0;
+        }
+    }),
+    std::make_pair("shrink", Command {
+        [](QCommandLineParser & parser) {
+            _debug() << "init shrink";
+        },
+        [](QCommandLineParser & parser) {
+            _debug() << "shrink";
+            return 0;
+        }
+    }),
+    std::make_pair("format", Command {
+        [](QCommandLineParser & parser) {
+            _debug() << "init format";
+        },
+        [](QCommandLineParser & parser) {
+            _debug() << "format";
+            return 0;
+        }
+    }),
+    std::make_pair("quality", Command {
+        [](QCommandLineParser & parser) {
+            _debug() << "init quality";
+        },
+        [](QCommandLineParser & parser) {
+            _debug() << "quality";
+            return 0;
+        }
+    })
+});
 
 void initApplication(QCoreApplication & app) {
     // Setting the application name is not required, since, if not set, it defaults to the executable name.
@@ -164,9 +246,11 @@ void initApplication(QCoreApplication & app) {
         .arg(libVersionMessage));
 }
 
-static const QCommandLineOption quietFlag("quiet", "Sets the output to silent log level (no output, fails silently).");
-static const QCommandLineOption verboseFlag("verbose", "Sets the output to verbose log level.");
-static const QCommandLineOption suppressWarningsFlag("suppress-warnings", "Sets the output to verbose log level.");
+// Verbosity flags instead of --verbosity levels
+static const QCommandLineOption quietFlag({"q", "quiet", "silent"}, "Sets the output to silent log level (no output, fails silently).");
+static const QCommandLineOption verboseFlag({"verbose", "debug"}, "Sets the output to debug log level.");
+static const QCommandLineOption suppressWarningsFlag("suppress-warnings", "Supresses warnings but keeps every other output.");
+
 static const QCommandLineOption supportedFormatsFlag("supported-formats", "Lists the supported file formats.");
 
 void initParserAndLogging(const QCoreApplication & app, QCommandLineParser & parser) {
@@ -174,7 +258,8 @@ void initParserAndLogging(const QCoreApplication & app, QCommandLineParser & par
 	parser.addHelpOption();
     parser.addOptions({quietFlag, verboseFlag, suppressWarningsFlag});
     parser.addPositionalArgument("command", "pscom command to execute", "<command> [<args>]");
-    parser.addPositionalArgument("path", "directory path", "<path>");
+    parser.setApplicationDescription(QString("Available Commands:\n  %1")
+        .arg(QStringList(commands.keys()).join(", ")));
     if(app.arguments().count() <= 1) {
         _info() << QString("Welcome to %1.").arg(APP_NAME);
         // exit with error code 1 because the user didn't supply any arguments
@@ -228,30 +313,18 @@ int main(int argc, char *argv[])
         // exit with error code 1 because the user didn't supply any arguments
         parser.showHelp(1);
     }
-    const auto command = args[0].toLower();
-    
-    lib_utils::io_ops::moveFiles({"./a.txt"}, [](const QString & filepath, bool success, int i, int total) {
-        _debug() << filepath << success << i << total;
+    const auto commandName = args.first().toLower();
+    const auto command = commands.value(commandName, Command {
+        [](QCommandLineParser & parser) {},
+        [&commandName](QCommandLineParser & parser) {
+            _warn() << QString("unknown command: \"%1\"").arg(commandName);
+            // exit with error code 2 for unknown command
+            parser.showHelp(2);
+            return 2;
+        }
     });
-    // if(command == "list") {
-        
-    // } else if(command == "copy") {
-
-    // } else if(command == "move") {
-
-    // } else if(command == "rename") {
-        
-    // } else if(command == "group") {
-        
-    // } else if(command == "shrink") {
-        
-    // } else if(command == "format") {
-        
-    // } else if(command == "quality") {
-        
-    // }
-    // process supplied arguments
-	// parser.process(app);
-
-    return app.exec();
+    command.parameterInitializer(parser);
+	parser.process(app);
+    return command.commandHandler(parser);
+    // return app.exec();
 }
