@@ -107,6 +107,25 @@ bool userConfirmation(const QString & message) {
     }
 }
 
+const int progressBarWidth = 42;
+const char
+    filledProgress = '#',
+    emptyProgress = '.';
+void drawProgressBar(double progress) {
+    if(progress < 0) progress = 0;
+    if(progress > 1) progress = 1;
+
+    const int width = (int) (progressBarWidth * progress);
+    QTextStream(stdout) << QString("[%1] %L2%")
+        .arg(QString(filledProgress).repeated(width), -progressBarWidth, emptyProgress)
+        .arg(progress * 100, 5, 'f', 1);
+}
+void clearProgressBar() {
+    QTextStream(stdout) << "\r"
+        << QString(" ").repeated(progressBarWidth + 9) // "[" + bar{width} + "] " + number{5} + "%"
+        << "\r";
+}
+
 void initParserAndLogging(const QCoreApplication & app, QCommandLineParser & parser) {
 	parser.addVersionOption();
 	parser.addHelpOption();
