@@ -19,14 +19,12 @@
  * - prefer qDebug, qInfo, qWarning, qCritical, and qFatal for verbosity and console output.
  */
 
-using namespace std;
-
 namespace lib_utils {
+    QStringList supportedFormats() {
+        return pscom::sf();
+    }
 
     namespace io_ops {
-        QStringList supportedFormats() {
-            return pscom::sf();
-        }
         bool isPathExistingDirectory(const QString & path) {
             return pscom::de(path);
         }
@@ -53,12 +51,13 @@ namespace lib_utils {
 
 }
 
-static const auto VERSION = QVersionNumber(1, 0, 0);
+static const QString APP_NAME("pscom-cli");
+static const QVersionNumber APP_VERSION(1, 0, 0);
 
 void initApplication() {
     // Setting the application name is not required, since, if not set, it defaults to the executable name.
-    QCoreApplication::setApplicationName("pscom-cli");
-    QCoreApplication::setApplicationVersion(VERSION.toString());
+    QCoreApplication::setApplicationName(APP_NAME);
+    QCoreApplication::setApplicationVersion(APP_VERSION.toString());
     
     // Read pscom version with format "%appName% version %appVersion% | pscom-%pscomVersion% qt-%qtVersion%"
     auto libVersion = pscom::vi();
@@ -71,18 +70,48 @@ void initApplication() {
         .arg(libVersionMessage));
 }
 
+void showSupportedFormats() {
+    QString seperator(", ");
+    qInfo().noquote() << QString("Supported image formats are: %1")
+        .arg(lib_utils::supportedFormats().join(seperator));
+}
+
 int main(int argc, char *argv[])
 {
     qInstallMessageHandler(VerbosityHandler);
     QCoreApplication app(argc, argv);
     initApplication();
 
-    /* ToDo - have fun! */
-    
-    // qDebug() << app.applicationDirPath();
+    // create parser including default help and version support
+	QCommandLineParser parser;
+	parser.addVersionOption();
+	parser.addHelpOption();
+    QCommandLineOption verbosity("verbosity", "verbosity level of the output", "debug|info|warning|critical|fatal", "info");
+    QCommandLineOption supportedFormatsFlag("supported-formats", "lists the supported file formats");
+    parser.addOption(verbosity);
+    parser.addOption(supportedFormatsFlag);
 
-    qDebug() << app.applicationName();
-    qDebug() << app.applicationVersion();
+    /*if(argc <= 1) {
+        // exit with error code 1 because the user didn't supply any arguments
+        parser.showHelp(1);
+    }*/
+
+    // parse currently supported arguments
+	parser.parse(QCoreApplication::arguments());
+
+    setVerbosity(parser.value(verbosity));
+    qInfo().noquote() << QString("Welcome to %1. Use --help to view all arguments.").arg(APP_NAME);
+
+    if(parser.isSet(supportedFormatsFlag)) {
+        qDebug() << QString("SupportedFormatsFlag=1");
+        showSupportedFormats();
+        return 0;
+    }
+
+    // process supplied arguments
+	parser.process(app);
+    
+    qDebug() << QString("ExecutionDirectory=%1").arg(app.applicationDirPath());
 
     return app.exec();
 }
