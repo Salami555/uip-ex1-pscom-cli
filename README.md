@@ -24,6 +24,7 @@
 2. copy/move files to new directory
 	- [ ] copy
 	- [ ] move
+	- [ ] --force
 3. rename files
 	- [ ] default upa
 	- [ ] own date-time-format "--format $format"
