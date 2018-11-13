@@ -2,14 +2,12 @@
 
 #include <qlogging.h>
 
-enum class LogLevel {
-    quiet = 0,
-    normal = 1,
-    verbose = 2
+class Logging {
+    public:
+        static bool quiet; // disables every output, fails silently
+        static bool verbose; // enables qDebug output
+        static bool suppressWarnings; // disables qWarning output
 };
-
-QString verbosityLevels();
-void setVerbosity(const QString & verbosity);
 
 /**
  * @brief VerbosityHandler - http://doc.qt.io/qt-5/qtglobal.html#qInstallMessageHandler

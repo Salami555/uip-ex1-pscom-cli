@@ -7,6 +7,7 @@
 #include <QDebug>
 #include <QRegExp>
 #include <QVersionNumber>
+#include <iostream>
 
 #include "verbosity.h"
 
@@ -54,64 +55,119 @@ namespace lib_utils {
 static const QString APP_NAME("pscom-cli");
 static const QVersionNumber APP_VERSION(1, 0, 0);
 
-void initApplication() {
+void initApplication(QCoreApplication & app) {
     // Setting the application name is not required, since, if not set, it defaults to the executable name.
-    QCoreApplication::setApplicationName(APP_NAME);
-    QCoreApplication::setApplicationVersion(APP_VERSION.toString());
+    app.setApplicationName(APP_NAME);
+    app.setApplicationVersion(APP_VERSION.toString());
     
     // Read pscom version with format "%appName% version %appVersion% | pscom-%pscomVersion% qt-%qtVersion%"
     auto libVersion = pscom::vi();
     auto libVersionMessage = libVersion.right(libVersion.length() - libVersion.indexOf("pscom-", 1));
     
-    QString versionString("%1 v%2 | %3");
-    QCoreApplication::setApplicationVersion(versionString
-        .arg(QCoreApplication::applicationName())
-        .arg(QCoreApplication::applicationVersion())
+    QString versionString("v%2 | %3");
+    app.setApplicationVersion(versionString
+        .arg(app.applicationVersion())
         .arg(libVersionMessage));
 }
 
+static const QCommandLineOption quietFlag("quiet", "Sets the output to silent log level (no output, fails silently).");
+static const QCommandLineOption verboseFlag("verbose", "Sets the output to verbose log level.");
+static const QCommandLineOption suppressWarningsFlag("suppress-warnings", "Sets the output to verbose log level.");
+static const QCommandLineOption supportedFormatsFlag("supported-formats", "Lists the supported file formats.");
+
+QDebug _debug() {
+    return qDebug().noquote();
+}
+QDebug _info() {
+    return qInfo().noquote();
+}
+QDebug _warn() {
+    return qWarning().noquote();
+}
+QDebug _crit() {
+    return qCritical().noquote();
+}
+void critExit(const QString & message) {
+    Logging::quiet = false;
+    _crit() << message << "\n";
+    std::exit(1);
+}
+bool userConfirmation(const QString & message) {
+    _crit() << message << "[y/n] ";
+    std::string input;
+    std::cin >> input;
+    switch(input[0]) {
+        case 'y':
+            return true;
+        case 'n':
+            return false;
+        default:
+            _warn() << QString("Unknown input \"%1\" - aborting!").arg(input.data());
+            return false;
+    }
+}
+
+void initParserAndLogging(const QCoreApplication & app, QCommandLineParser & parser) {
+	parser.addVersionOption();
+	parser.addHelpOption();
+    parser.addOptions({quietFlag, verboseFlag, suppressWarningsFlag});
+    parser.addPositionalArgument("command", "The pscom command to execute.", "<command> [<args>]");
+    if(app.arguments().count() <= 1) {
+        _info() << QString("Welcome to %1.").arg(APP_NAME);
+        // exit with error code 1 because the user didn't supply any arguments
+        parser.showHelp(1);
+    }
+
+    parser.parse(app.arguments()); // ignore unknown options for now
+    Logging::quiet = parser.isSet(quietFlag);
+    Logging::verbose = parser.isSet(verboseFlag);
+    if(Logging::quiet && Logging::verbose) {
+        std::exit(-1);
+        // critExit("invalid arguments: --verbose cannot be set at the same time with --quiet");
+    }
+    Logging::suppressWarnings = parser.isSet(suppressWarningsFlag);
+    // _debug()
+    //     << QString("Quiet=%1").arg(Logging::quiet)
+    //     << QString("Verbose=%2").arg(Logging::verbose)
+    //     << QString("Suppress-Warnings=%3").arg(Logging::suppressWarnings);
+}
+
 void showSupportedFormats() {
-    QString seperator(", ");
-    qInfo().noquote() << QString("Supported image formats are: %1")
-        .arg(lib_utils::supportedFormats().join(seperator));
+    if(Logging::verbose) {
+        _info() << QString("Supported image formats: %1")
+            .arg(lib_utils::supportedFormats().join(", "));
+    } else {
+        _info() << lib_utils::supportedFormats().join("|");
+    }
 }
 
 int main(int argc, char *argv[])
 {
     qInstallMessageHandler(VerbosityHandler);
     QCoreApplication app(argc, argv);
-    initApplication();
+    initApplication(app);
 
     // create parser including default help and version support
-	QCommandLineParser parser;
-	parser.addVersionOption();
-	parser.addHelpOption();
-    QCommandLineOption verbosity("verbosity", "verbosity level of the output", "debug|info|warning|critical|fatal", "info");
-    QCommandLineOption supportedFormatsFlag("supported-formats", "lists the supported file formats");
-    parser.addOption(verbosity);
-    parser.addOption(supportedFormatsFlag);
-
-    /*if(argc <= 1) {
-        // exit with error code 1 because the user didn't supply any arguments
-        parser.showHelp(1);
-    }*/
-
-    // parse currently supported arguments
-	parser.parse(QCoreApplication::arguments());
-
-    setVerbosity(parser.value(verbosity));
-    qInfo().noquote() << QString("Welcome to %1. Use --help to view all arguments.").arg(APP_NAME);
-
+    QCommandLineParser parser;
+    parser.addOptions({supportedFormatsFlag});
+    initParserAndLogging(app, parser);
+    // _debug() << QString("ExecutionDirectory=%1").arg(app.applicationDirPath());
+    
     if(parser.isSet(supportedFormatsFlag)) {
-        qDebug() << QString("SupportedFormatsFlag=1");
+        if(Logging::quiet) {
+            return -1;
+            // critExit("invalid arguments: --quiet suppresses output of --supported-formats");
+        }
+        // _debug() << QString("SupportedFormatsFlag=1");
         showSupportedFormats();
         return 0;
     }
 
-    // process supplied arguments
-	parser.process(app);
-    
-    qDebug() << QString("ExecutionDirectory=%1").arg(app.applicationDirPath());
+    QStringList args = parser.positionalArguments();
+    if(args.empty()) {
+        // exit with error code 1 because the user didn't supply any arguments
+        parser.showHelp(1);
+    }
 
     return app.exec();
 }
