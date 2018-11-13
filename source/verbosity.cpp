@@ -4,53 +4,47 @@
 #include <QString>
 #include <QDebug>
 
-int logLevelOfMsgType(QtMsgType type) {
-    switch(type) {
-        case QtDebugMsg:
-            return 0;
-        case QtInfoMsg:
-            return 2;
-        case QtWarningMsg:
-            return 4;
-        case QtCriticalMsg:
-            return 8;
-        case QtFatalMsg:
-            return 16;
-        default:
-            return 1;
-    }
-}
+/**
+ * qDebug for verbose and debug messages
+ * qInfo for informational user outputs
+ * qWarning for non-blocking warnings
+ * qCritical for program interrupts (user confirmations)
+ * qFatal for exceptions
+ * 
+ * verbosities:
+ * quiet/silent - no output, fail silently on criticals using status codes
+ * normal/info - output includes levels down to info
+ * verbose/debug - output includes all levels
+ */
 
-int MAX_LOG_LEVEL;
+LogLevel LOG_LEVEL = LogLevel::normal;
+
+const QVector<QStringList> VERBOSITY = {
+    {"quiet", "silent"},
+    {"normal", "info"},
+    {"verbose", "debug"}
+};
 
 void setVerbosity(const QString & verbosity) {
-    QtMsgType type;
-    if(verbosity.compare(QString("debug"), Qt::CaseInsensitive) == 0) {
-        type = QtDebugMsg;
-    } else if(verbosity.compare(QString("info"), Qt::CaseInsensitive) == 0) {
-        type = QtInfoMsg;
-    } else if(verbosity.compare(QString("warning"), Qt::CaseInsensitive) == 0) {
-        type = QtWarningMsg;
-    } else if(verbosity.compare(QString("critical"), Qt::CaseInsensitive) == 0) {
-        type = QtCriticalMsg;
-    } else if(verbosity.compare(QString("fatal"), Qt::CaseInsensitive) == 0) {
-        type = QtFatalMsg;
-    } else {
-        MAX_LOG_LEVEL = 1;
-        return;
+    QString verbosityStr = verbosity.toLower();
+    qDebug() << verbosityStr;
+    for(int i = 0; i < VERBOSITY.count(); ++i) {
+        if(VERBOSITY[i].contains(verbosityStr)) {
+            LOG_LEVEL = static_cast<LogLevel>(i);
+            qDebug() << QString("Verbosity=%1").arg(verbosityStr);
+            return;
+        }
     }
-    MAX_LOG_LEVEL = logLevelOfMsgType(type);
-    qDebug() << QString("Verbosity=%1").arg(verbosity);
 }
 
 void VerbosityHandler(QtMsgType type, const QMessageLogContext & /*context*/, const QString & message)
 {
     // QString ansiEsc("\033[%1m");
-    if(logLevelOfMsgType(type) < MAX_LOG_LEVEL) {
-        return;
-    }
+    // if(logLevelOfMsgType(type) < MAX_LOG_LEVEL) {
+    //     return;
+    // }
 
-    QString prefix("ERROR");
+    QString prefix("");
     auto stream = stdout;
 
     switch (type) {
@@ -64,7 +58,6 @@ void VerbosityHandler(QtMsgType type, const QMessageLogContext & /*context*/, co
         prefix = QString("Warning: ");
         break;
     case QtCriticalMsg:
-        prefix = QString("Critical: ");
         break;
     case QtFatalMsg:
         prefix = QString("Fatal Error: ");

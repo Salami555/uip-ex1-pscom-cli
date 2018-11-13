@@ -2,6 +2,13 @@
 
 #include <qlogging.h>
 
+enum class LogLevel {
+    quiet = 0,
+    normal = 1,
+    verbose = 2
+};
+
+QString verbosityLevels();
 void setVerbosity(const QString & verbosity);
 
 /**
