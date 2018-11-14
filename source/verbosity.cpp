@@ -48,7 +48,7 @@ void VerbosityHandler(QtMsgType type, const QMessageLogContext & /*context*/, co
         stream = stderr;
         break;
     case QtFatalMsg:
-        prefix = QString("FATAL ");
+        prefix = QString("FATAL");
         stream = stderr;
         break;
     }
