@@ -224,7 +224,10 @@ namespace lib_utils {
             return IOSettings::dryRun || pscom::cp(sourceFilepath, targetFilepath);
         }
         bool moveFile(const QString & sourceFilepath, const QString & targetFilepath, bool force = false, bool userConfirm = true) {
-            if(sourceFilepath == targetFilepath) {
+            QString sfp = QString(sourceFilepath).replace("\\", QDir::separator()),
+                    tfp = QString(targetFilepath).replace("\\", QDir::separator());
+            // todo fix 
+            if(sfp == tfp) {
                 _debug() << QString("Equal source and target file \"%1\"").arg(sourceFilepath);
                 return true;
             }
@@ -241,9 +244,6 @@ namespace lib_utils {
             }
             _debug() << QString("Moving file \"%1\" to \"%2\"").arg(sourceFilepath).arg(targetFilepath);
             return IOSettings::dryRun || pscom::mv(sourceFilepath, targetFilepath);
-        }
-        bool renameFile(const QString & sourceFilepath, const QString & targetFilepath) {
-            return moveFile(sourceFilepath, targetFilepath, true);
         }
 
         bool createDirectories(const QString & path) {
@@ -446,7 +446,6 @@ void parseFileListingSettings(const QCommandLineParser & parser) {
     }
 }
 void registerIOSettings(QCommandLineParser & parser) {
-    parser.addOptions({targetDirectoryOption, fileOPsCreateDirectoriesFlag});
     parser.addOptions({progressBarFlag, fileOPsDryRunFlag, fileOPsForceOverwriteFlag, fileOPsSkipExistingFlag});
 }
 void parseIOSettings(const QCommandLineParser & parser) {
@@ -455,6 +454,12 @@ void parseIOSettings(const QCommandLineParser & parser) {
     dryRun = parser.isSet(fileOPsDryRunFlag);
     forceOverwrite = parser.isSet(fileOPsForceOverwriteFlag);
     skipExisting = parser.isSet(fileOPsSkipExistingFlag);
+}
+void registerTargetSetting(QCommandLineParser & parser) {
+    parser.addOptions({targetDirectoryOption, fileOPsCreateDirectoriesFlag});
+}
+void parseTargetSetting(const QCommandLineParser & parser) {
+    using namespace IOSettings;
     if(parser.isSet(targetDirectoryOption)) {
         targetDirectory = parser.value(targetDirectoryOption);
         if(!targetDirectory.endsWith(QDir::separator())) {
@@ -504,10 +509,12 @@ static const QMap<QString, Task> tasks({
             parser.addPositionalArgument("copy", "Copy all (filtered) images found in the source directories to the target directory.", "copy [file-options]");
             registerFileListingSettings(parser);
             registerIOSettings(parser);
+            registerTargetSetting(parser);
         },
         [](QCommandLineParser & parser) {
             parseFileListingSettings(parser);
             parseIOSettings(parser);
+            parseTargetSetting(parser);
             using namespace lib_utils::io_ops;
             using namespace IOSettings;
             auto fileList = listFiles();
@@ -522,7 +529,7 @@ static const QMap<QString, Task> tasks({
                 }
             );
             if(!problemFileList.empty()) {
-                _info() << QString("Found %1 files with problems").arg(problemFileList.count());
+                _info() << QString("Found %1 file(s) with problems").arg(problemFileList.count());
             }
             auto finalProblems = multiFileOperation(problemFileList,
                 [](const QString & filepath) {
@@ -545,10 +552,12 @@ static const QMap<QString, Task> tasks({
             parser.addPositionalArgument("move", "Move all (filtered) images found in the source directories to the target directory.", "move [file-options]");
             registerFileListingSettings(parser);
             registerIOSettings(parser);
+            registerTargetSetting(parser);
         },
         [](QCommandLineParser & parser) {
             parseFileListingSettings(parser);
             parseIOSettings(parser);
+            parseTargetSetting(parser);
             using namespace lib_utils::io_ops;
             using namespace IOSettings;
             auto fileList = listFiles();
@@ -563,7 +572,7 @@ static const QMap<QString, Task> tasks({
                 }
             );
             if(!problemFileList.empty()) {
-                _info() << QString("Found %1 files with problems").arg(problemFileList.count());
+                _info() << QString("Found %1 file(s) with problems").arg(problemFileList.count());
             }
             auto finalProblems = multiFileOperation(problemFileList,
                 [](const QString & filepath) {
@@ -582,10 +591,44 @@ static const QMap<QString, Task> tasks({
     }),
     std::make_pair("rename", Task {
         [](QCommandLineParser & parser) {
-            _debug() << "init rename";
+            parser.clearPositionalArguments();
+            parser.addPositionalArgument("rename", "Rename all (filtered) images found in the source directories to upa filename scheme.", "move [move-options]");
+            registerFileListingSettings(parser);
+            registerIOSettings(parser);
+            parser.addOption(renameFormatOption);
         },
         [](QCommandLineParser & parser) {
-            _debug() << "rename";
+            parseFileListingSettings(parser);
+            parseIOSettings(parser);
+            const QString schemeFormat = parser.value(renameFormatOption);
+            using namespace lib_utils::io_ops;
+            using namespace IOSettings;
+            auto fileList = listFiles();
+            const int total = fileList.count();
+            auto problemFileList = multiFileOperation(fileList,
+                [](const QString & filepath) {
+                    return QString("Moving %1").arg(filepath);
+                },
+                [&](const QString & filepath) {
+                    const QString targetpath = filepath_ops::pathSetDatedFileBaseName(filepath, schemeFormat, fileCreationDateTime(filepath));
+                    return moveFile(filepath, targetpath, forceOverwrite, false);
+                }
+            );
+            if(!problemFileList.empty()) {
+                _info() << QString("Found %1 file(s) with problems").arg(problemFileList.count());
+            }
+            auto finalProblems = multiFileOperation(problemFileList,
+                [](const QString & filepath) {
+                    return QString("Retry moving %1").arg(filepath);
+                },
+                [&](const QString & filepath) {
+                    const QString targetpath = filepath_ops::pathSetDatedFileBaseName(filepath, schemeFormat, fileCreationDateTime(filepath));
+                    return moveFile(filepath, targetpath, false, true);
+                },
+                true
+            );
+            _info() << QString("Moving completed (%1 file(s) moved)!")
+                .arg(total - finalProblems.count());
             return 0;
         }
     }),
