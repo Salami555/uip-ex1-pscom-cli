@@ -22,10 +22,7 @@
  * - prefer qDebug, qInfo, qWarning, qCritical, and qFatal for verbosity and console output.
  */
 
-QTextStream & _stdout() {
-    QTextStream out(stdout, QIODevice::WriteOnly | QIODevice::Unbuffered);
-    return out;
-}
+QTextStream _stdout(stdout, QIODevice::WriteOnly | QIODevice::Unbuffered);
 
 bool progressBarVisible = false;
 const int progressBarWidth = 42;
@@ -39,18 +36,18 @@ void drawProgressBar(double progress, bool newLine = false) {
     if(progress > 1) progress = 1;
 
     const int width = (int) (progressBarWidth * progress);
-    _stdout() << QString("[%1] %L2%")
+    _stdout << QString("[%1] %L2%")
         .arg(QString(filledProgress).repeated(width), -progressBarWidth, emptyProgress)
         .arg(progress * 100, 5, 'f', 1);
     progressBarVisible = true;
     if(newLine) {
-        _stdout() << '\n';
+        _stdout << '\n';
         progressBarVisible = false;
     }
 }
 void clearProgressBar() {
     if(progressBarVisible) {
-        _stdout() << "\r"
+        _stdout << "\r"
             << QString(" ").repeated(progressBarWidth + 9) // "[" + bar{width} + "] " + number{5} + "%"
             << "\r";
         progressBarVisible = false;
@@ -504,7 +501,7 @@ static const QMap<QString, Task> tasks({
     std::make_pair("copy", Task {
         [](QCommandLineParser & parser) {
             parser.clearPositionalArguments();
-            parser.addPositionalArgument("copy", "Copy all (filtered) images found in the source directories to the target directory.", "copy [copy-options]");
+            parser.addPositionalArgument("copy", "Copy all (filtered) images found in the source directories to the target directory.", "copy [file-options]");
             registerFileListingSettings(parser);
             registerIOSettings(parser);
         },
@@ -544,10 +541,42 @@ static const QMap<QString, Task> tasks({
     }),
     std::make_pair("move", Task {
         [](QCommandLineParser & parser) {
-            _debug() << "init move";
+            parser.clearPositionalArguments();
+            parser.addPositionalArgument("move", "Move all (filtered) images found in the source directories to the target directory.", "move [file-options]");
+            registerFileListingSettings(parser);
+            registerIOSettings(parser);
         },
         [](QCommandLineParser & parser) {
-            _debug() << "move";
+            parseFileListingSettings(parser);
+            parseIOSettings(parser);
+            using namespace lib_utils::io_ops;
+            using namespace IOSettings;
+            auto fileList = listFiles();
+            const int total = fileList.count();
+            auto problemFileList = multiFileOperation(fileList,
+                [](const QString & filepath) {
+                    return QString("Moving %1").arg(filepath);
+                },
+                [](const QString & filepath) {
+                    const auto targetpath = targetDirectory + filepath_ops::fileName(filepath);
+                    return moveFile(filepath, targetpath, forceOverwrite, false);
+                }
+            );
+            if(!problemFileList.empty()) {
+                _info() << QString("Found %1 files with problems").arg(problemFileList.count());
+            }
+            auto finalProblems = multiFileOperation(problemFileList,
+                [](const QString & filepath) {
+                    return QString("Retry moving %1").arg(filepath);
+                },
+                [](const QString & filepath) {
+                    const auto targetpath = targetDirectory + filepath_ops::fileName(filepath);
+                    return moveFile(filepath, targetpath, false, true);
+                },
+                true
+            );
+            _info() << QString("Moving completed (%1 file(s) moved)!")
+                .arg(total - finalProblems.count());
             return 0;
         }
     }),
