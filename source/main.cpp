@@ -119,18 +119,21 @@ QString progressMessage(int pos, int total, QString operation, QString filepath)
         .arg(filepath);
 }
 
+namespace IOFlags {
+    QString sourceDirectory, targetDirectory;
+    bool recursive = false;
+    bool skipExisting = false;
+    bool force = false;
+    bool dryRun = false;
+    bool progressBar = false;
+}
+
 namespace lib_utils {
     QStringList supportedFormats() {
         return pscom::sf();
     }
 
     namespace io_ops {
-        bool recursive = false;
-        bool skipExisting = false;
-        bool force = false;
-        bool dryRun = false;
-        bool progressBar = false;
-
         bool isPathExistingDirectory(const QString & path) {
             return pscom::de(path);
         }
@@ -179,37 +182,37 @@ namespace lib_utils {
             }
             return dryRun || pscom::rm(filepath);
         }
-        // bool copyFile(const QString & sourceFilepath, const QString & destinationFilepath, bool force = false) {
+        // bool copyFile(const QString & sourceFilepath, const QString & targetFilepath, bool force = false) {
         //     // TODO
-        //     return dryRun || pscom::cp(sourceFilepath, destinationFilepath);
+        //     return dryRun || pscom::cp(sourceFilepath, targetFilepath);
         // }
-        bool moveFile(const QString & sourceFilepath, const QString & destinationFilepath, bool force = false) {
-            if(sourceFilepath == destinationFilepath) {
-                _debug() << QString("Equal source and destination file \"%1\"").arg(sourceFilepath);
+        bool moveFile(const QString & sourceFilepath, const QString & targetFilepath, bool force = false) {
+            if(sourceFilepath == targetFilepath) {
+                _debug() << QString("Equal source and target file \"%1\"").arg(sourceFilepath);
                 return true;
             }
             if(!isPathExistingFile(sourceFilepath)) {
                 _warn() << QString("File not found \"%1\"").arg(sourceFilepath);
                 return false;
             }
-            if(isPathExistingFile(destinationFilepath)) {
-                _debug() << QString("Destination file already exists \"%1\"").arg(destinationFilepath);
+            if(isPathExistingFile(targetFilepath)) {
+                _debug() << QString("Target file already exists \"%1\"").arg(targetFilepath);
                 if(!userConfirmation(QString("Overwrite file \"%1\" with \"%2\"?")
-                    .arg(destinationFilepath).arg(sourceFilepath), force)) {
-                    _info() << QString("Skipped file \"%1\"").arg(destinationFilepath);
+                    .arg(targetFilepath).arg(sourceFilepath), force)) {
+                    _info() << QString("Skipped file \"%1\"").arg(targetFilepath);
                     return false;
                 }
-                _debug() << QString("Removing file \"%1\"").arg(destinationFilepath);
-                if(!removeFile(destinationFilepath)) {
+                _debug() << QString("Removing file \"%1\"").arg(targetFilepath);
+                if(!removeFile(targetFilepath)) {
                     _warn() << QString("Removing file failed \"%1\"").arg(sourceFilepath);
                     return false;
                 }
             }
-            _debug() << QString("Moving file \"%1\" to \"%2\"").arg(sourceFilepath).arg(destinationFilepath);
-            return dryRun || pscom::mv(sourceFilepath, destinationFilepath);
+            _debug() << QString("Moving file \"%1\" to \"%2\"").arg(sourceFilepath).arg(targetFilepath);
+            return dryRun || pscom::mv(sourceFilepath, targetFilepath);
         }
-        bool renameFile(const QString & sourceFilepath, const QString & destinationFilepath) {
-            return moveFile(sourceFilepath, destinationFilepath, true);
+        bool renameFile(const QString & sourceFilepath, const QString & targetFilepath) {
+            return moveFile(sourceFilepath, targetFilepath, true);
         }
 
         bool createDirectory(const QString & path) {
@@ -218,20 +221,20 @@ namespace lib_utils {
             }
             return dryRun || pscom::mk(path);
         }
-        // bool moveDirectory(const QString & sourcePath, const QString & destinationPath) {
-        //     if(sourcePath == destinationPath) {
+        // bool moveDirectory(const QString & sourcePath, const QString & targetPath) {
+        //     if(sourcePath == targetPath) {
 
         //     }
         //     if(!isPathExistingDirectory(sourcePath)) {
-        //         throw "directory not found";
+        //         throw "Directory not found";
         //     }
-        //     if(isPathExistingDirectory(destinationPath)) {
-        //         throw "destination directory already exists";
+        //     if(isPathExistingDirectory(targetPath)) {
+        //         throw "Target directory already exists";
         //     }
-        //     return dryRun || pscom::mv(sourcePath, destinationPath);
+        //     return dryRun || pscom::mv(sourcePath, targetPath);
         // }
-        // bool renameDirectory(const QString & sourcePath, const QString & destinationPath) {
-        //     return moveDirectory(sourcePath, destinationPath);
+        // bool renameDirectory(const QString & sourcePath, const QString & targetPath) {
+        //     return moveDirectory(sourcePath, targetPath);
         // }
         
         QStringList listFiles(const QString & path, bool recursive, const QRegExp & regex = QRegExp(".*")) {
@@ -270,12 +273,12 @@ namespace lib_utils {
         //         const QString filepath = filepaths[i];
         //         const int pos = i + 1;
         //         _debug() << progressMessage(pos, total, "Moving", filepath);
-        //         if(progressBar) drawProgressBar((pos-1)/total);
+        //         if(IOFlags::progressBar) drawProgressBar((pos-1)/total);
         //         bool success = false;
         //         // todo move
         //         fileCompletionCallback(filepath, success, pos, total);
         //         _info() << progressMessage(pos, total, "Moving", filepath);
-        //         if(progressBar) drawProgressBar(pos/total);
+        //         if(IOFlags::progressBar) drawProgressBar(pos/total);
         //         if(!success) {
         //             unsuccessful << filepath;
         //         }
@@ -286,32 +289,52 @@ namespace lib_utils {
     }
 }
 
-struct Command {
+struct Task {
     std::function<void (QCommandLineParser &)> parameterInitializer;
-    std::function<int (QCommandLineParser &)> commandHandler;
+    std::function<int (QCommandLineParser &)> taskHandler;
     bool unknown;
 };
 
 static const QString APP_NAME("pscom-cli");
 static const QVersionNumber APP_VERSION(1, 0, 0);
 
-// Command specific flags
-static const QCommandLineOption listFilesRecursivelyFlag({"r", "recursive"}, "Traverse the directory recursively.");
-static const QCommandLineOption filterFilesRegexOption("match", "Match the filenames against the given regex.", "<regex>");
-static const QCommandLineOption filterFilesAfterDateOption("after", "Filter the files to be created after the given date.", "<datetime>");
-static const QCommandLineOption filterFilesBeforeDateOption("before", "Filter the files to be created before the given date.", "<datetime>");
+// 
+static const QCommandLineOption sourceDirectoryOption({"s", "source"}, "Source directory.", "<source directory>");
+static const QCommandLineOption targetDirectoryOption({"t", "target"}, "Target directory.", "<target directory>");
+static const QCommandLineOption searchRecursivelyFlag({"r", "recursive"}, "Traverse the directory recursively.");
 static const QCommandLineOption progressBarFlag({"p", "progress"}, "Show a progress bar (if the task supports it).");
-static const QCommandLineOption fileOPsSkipExistingFlag({"skip", "skip-existing"}, "Skip existing files without asking.");
-static const QCommandLineOption fileOPsForceOverwriteFlag({"force", "overwrite"}, "Overwrite existing files without asking.");
+static const QCommandLineOption fileOPsSkipExistingFlag({"skip", "skip-existing"}, "Skip existing images without asking.");
+static const QCommandLineOption fileOPsForceOverwriteFlag({"force", "overwrite"}, "Overwrite existing images without asking.");
 static const QCommandLineOption fileOPsDryRunFlag({"dry-run", "noop"}, "Simulate every file operation without actually doing it.");
-static const QCommandLineOption renameFilesFormatOption("format", "Date time format for renaming the files. Default is UPA scheme: yyyyMMdd_HHmmsszzz", "<datetime-format>", "yyyyMMdd_HHmmsszzz");
-static const QCommandLineOption groupFilesLocationOption("location", "Location name for grouping into folders.", "<location>");
-static const QCommandLineOption groupFilesEventOption("event", "Event name for grouping into folders.", "<event>");
 
-static const QMap<QString, Command> commands({
-    std::make_pair("list", Command {
+// task specific flags
+static const QCommandLineOption filterRegexOption("match", "Match the filenames against the given regex.", "<regex>");
+static const QCommandLineOption filterAfterDateOption("after", "Filter the images to be created after the given date.", "<datetime>");
+static const QCommandLineOption filterBeforeDateOption("before", "Filter the images to be created before the given date.", "<datetime>");
+static const QCommandLineOption renameFormatOption("format", "Date time format for renaming the images. Default is UPA scheme: yyyyMMdd_HHmmsszzz", "<datetime-format>", "yyyyMMdd_HHmmsszzz");
+static const QCommandLineOption groupLocationOption("location", "Location name for folder grouping.", "<location>");
+static const QCommandLineOption groupEventOption("event", "Event name for folder grouping.", "<event>");
+static const QCommandLineOption transformWorkOnCopyFlag({"copy", "keep-original"}, "Keeps the original image and works on a renamed copy.");
+static const QCommandLineOption transformShrinkWidthOption({"w", "width"}, "New image width in px.", "<width>");
+static const QCommandLineOption transformShrinkWidthOption({"h", "height"}, "New image height in px.", "<height>");
+static const QCommandLineOption transformFormatOption("format", "New image format (check supported formats with --supported-formats).", "<format>");
+static const QCommandLineOption transformQualityOption("quality", "New image quality between 0 and 100. Default: 70", "<quality>", "70");
+
+void registerFileFlags(QCommandLineParser & parser) {
+    parser.addOptions({sourceDirectoryOption, targetDirectoryOption, searchRecursivelyFlag});
+}
+void initFileFlags(const QCommandLineParser & parser) {
+    // IOFlags::recursive = false;
+    // IOFlags::skipExisting = false;
+    // IOFlags::force = false;
+    // IOFlags::dryRun = false;
+    // IOFlags::progressBar = false;
+}
+
+static const QMap<QString, Task> tasks({
+    std::make_pair("list", Task {
         [](QCommandLineParser & parser) {
-            _debug() << "init list";
+            
         },
         [](QCommandLineParser & parser) {
             _debug() << "list";
@@ -325,7 +348,7 @@ static const QMap<QString, Command> commands({
             return 0;
         }
     }),
-    std::make_pair("copy", Command {
+    std::make_pair("copy", Task {
         [](QCommandLineParser & parser) {
             _debug() << "init copy";
         },
@@ -341,7 +364,7 @@ static const QMap<QString, Command> commands({
             return 0;
         }
     }),
-    std::make_pair("move", Command {
+    std::make_pair("move", Task {
         [](QCommandLineParser & parser) {
             _debug() << "init move";
         },
@@ -350,7 +373,7 @@ static const QMap<QString, Command> commands({
             return 0;
         }
     }),
-    std::make_pair("rename", Command {
+    std::make_pair("rename", Task {
         [](QCommandLineParser & parser) {
             _debug() << "init rename";
         },
@@ -359,7 +382,7 @@ static const QMap<QString, Command> commands({
             return 0;
         }
     }),
-    std::make_pair("group", Command {
+    std::make_pair("group", Task {
         [](QCommandLineParser & parser) {
             _debug() << "init group";
         },
@@ -368,30 +391,12 @@ static const QMap<QString, Command> commands({
             return 0;
         }
     }),
-    std::make_pair("shrink", Command {
-        [](QCommandLineParser & parser) {
-            _debug() << "init shrink";
-        },
-        [](QCommandLineParser & parser) {
-            _debug() << "shrink";
-            return 0;
-        }
-    }),
-    std::make_pair("format", Command {
+    std::make_pair("transform", Task {
         [](QCommandLineParser & parser) {
             _debug() << "init format";
         },
         [](QCommandLineParser & parser) {
             _debug() << "format";
-            return 0;
-        }
-    }),
-    std::make_pair("quality", Command {
-        [](QCommandLineParser & parser) {
-            _debug() << "init quality";
-        },
-        [](QCommandLineParser & parser) {
-            _debug() << "quality";
             return 0;
         }
     })
@@ -424,7 +429,7 @@ void initParserAndLogging(const QCoreApplication & app, QCommandLineParser & par
 	parser.addHelpOption();
     parser.addOptions({quietFlag, verboseFlag, suppressWarningsFlag});
     parser.addPositionalArgument("task", QString("One of the following:\n%1")
-        .arg(QStringList(commands.keys()).join(", ")), "<task> [<args>]");
+        .arg(QStringList(tasks.keys()).join(", ")), "<task> [<args>]");
     parser.setApplicationDescription(QString("Welcome to %1 - your simple command line UPA.").arg(APP_NAME));
     if(app.arguments().count() <= 1) {
         // exit with error code 1 because the user didn't supply any arguments
@@ -474,21 +479,21 @@ int main(int argc, char *argv[])
         parser.showHelp(1);
     }
     const auto taskName = args.first().toLower();
-    const auto command = commands.value(taskName, Command {
+    const auto task = tasks.value(taskName, Task {
         [](QCommandLineParser & parser) {},
         [&taskName](QCommandLineParser & parser) {
-            _warn() << QString("Unknown command: \"%1\"").arg(taskName);
-            // exit with error code 2 for unknown command
+            _warn() << QString("Unknown task: \"%1\"").arg(taskName);
+            // exit with error code 2 for unknown task
             parser.showHelp(2);
             return 2;
         },
         true
     });
-    if(!command.unknown) {
+    if(!task.unknown) {
         _debug() << QString("Starting task \"%1\"").arg(taskName);
-        command.parameterInitializer(parser);
+        task.parameterInitializer(parser);
 	    parser.process(app);
     }
-    return command.commandHandler(parser);
+    return task.taskHandler(parser);
     // return app.exec();
 }
