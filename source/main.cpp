@@ -119,8 +119,8 @@ QString progressMessage(int pos, int total, QString operation, QString filepath)
         .arg(filepath);
 }
 
-namespace IOFlags {
-    QString sourceDirectory, targetDirectory;
+namespace IOSettings {
+    QStringList sourceDirectories, targetDirectories;
     bool recursive = false;
     bool skipExisting = false;
     bool force = false;
@@ -180,7 +180,7 @@ namespace lib_utils {
                 _warn() << QString("Not a file to remove \"%1\"").arg(filepath);
                 return false;
             }
-            return dryRun || pscom::rm(filepath);
+            return IOSettings::dryRun || pscom::rm(filepath);
         }
         // bool copyFile(const QString & sourceFilepath, const QString & targetFilepath, bool force = false) {
         //     // TODO
@@ -209,7 +209,7 @@ namespace lib_utils {
                 }
             }
             _debug() << QString("Moving file \"%1\" to \"%2\"").arg(sourceFilepath).arg(targetFilepath);
-            return dryRun || pscom::mv(sourceFilepath, targetFilepath);
+            return IOSettings::dryRun || pscom::mv(sourceFilepath, targetFilepath);
         }
         bool renameFile(const QString & sourceFilepath, const QString & targetFilepath) {
             return moveFile(sourceFilepath, targetFilepath, true);
@@ -219,7 +219,7 @@ namespace lib_utils {
             if(isPathExisting(path)) {
                 return true;
             }
-            return dryRun || pscom::mk(path);
+            return IOSettings::dryRun || pscom::mk(path);
         }
         // bool moveDirectory(const QString & sourcePath, const QString & targetPath) {
         //     if(sourcePath == targetPath) {
@@ -273,12 +273,12 @@ namespace lib_utils {
         //         const QString filepath = filepaths[i];
         //         const int pos = i + 1;
         //         _debug() << progressMessage(pos, total, "Moving", filepath);
-        //         if(IOFlags::progressBar) drawProgressBar((pos-1)/total);
+        //         if(IOSettings::progressBar) drawProgressBar((pos-1)/total);
         //         bool success = false;
         //         // todo move
         //         fileCompletionCallback(filepath, success, pos, total);
         //         _info() << progressMessage(pos, total, "Moving", filepath);
-        //         if(IOFlags::progressBar) drawProgressBar(pos/total);
+        //         if(IOSettings::progressBar) drawProgressBar(pos/total);
         //         if(!success) {
         //             unsuccessful << filepath;
         //         }
@@ -298,53 +298,93 @@ struct Task {
 static const QString APP_NAME("pscom-cli");
 static const QVersionNumber APP_VERSION(1, 0, 0);
 
-// 
-static const QCommandLineOption sourceDirectoryOption({"s", "source"}, "Source directory.", "<source directory>");
-static const QCommandLineOption targetDirectoryOption({"t", "target"}, "Target directory.", "<target directory>");
+void initApplication(QCoreApplication & app) {
+    // Setting the application name is not required, since, if not set, it defaults to the executable name.
+    app.setApplicationName(APP_NAME);
+    app.setApplicationVersion(APP_VERSION.toString());
+    
+    // Read pscom version with format "%appName% version %appVersion% | pscom-%pscomVersion% qt-%qtVersion%"
+    auto libVersion = pscom::vi();
+    auto libVersionMessage = libVersion.right(libVersion.length() - libVersion.indexOf("pscom-", 1));
+    
+    QString versionString("v%2 | %3");
+    app.setApplicationVersion(versionString
+        .arg(app.applicationVersion())
+        .arg(libVersionMessage));
+}
+
+// Verbosity flags instead of --verbosity levels
+static const QCommandLineOption quietFlag({"q", "quiet", "silent"}, "Sets the output to silent log level (no output, fails silently).");
+static const QCommandLineOption verboseFlag({"verbose", "debug"}, "Sets the output to debug log level.");
+static const QCommandLineOption suppressWarningsFlag("suppress-warnings", "Suppresses warnings but keeps every other output.");
+
+static const QCommandLineOption supportedFormatsFlag("supported-formats", "Lists the supported file formats.");
+
+// general task flags
 static const QCommandLineOption searchRecursivelyFlag({"r", "recursive"}, "Traverse the directory recursively.");
+static const QCommandLineOption sourceDirectoryOption({"s", "source"}, "Source directory.", "source directory", "./");
+
+// specific task flags
+static const QCommandLineOption targetDirectoryOption({"t", "target"}, "Target directory.", "target directory", "./");
 static const QCommandLineOption progressBarFlag({"p", "progress"}, "Show a progress bar (if the task supports it).");
 static const QCommandLineOption fileOPsSkipExistingFlag({"skip", "skip-existing"}, "Skip existing images without asking.");
 static const QCommandLineOption fileOPsForceOverwriteFlag({"force", "overwrite"}, "Overwrite existing images without asking.");
 static const QCommandLineOption fileOPsDryRunFlag({"dry-run", "noop"}, "Simulate every file operation without actually doing it.");
 
-// task specific flags
-static const QCommandLineOption filterRegexOption("match", "Match the filenames against the given regex.", "<regex>");
-static const QCommandLineOption filterAfterDateOption("after", "Filter the images to be created after the given date.", "<datetime>");
-static const QCommandLineOption filterBeforeDateOption("before", "Filter the images to be created before the given date.", "<datetime>");
-static const QCommandLineOption renameFormatOption("format", "Date time format for renaming the images. Default is UPA scheme: yyyyMMdd_HHmmsszzz", "<datetime-format>", "yyyyMMdd_HHmmsszzz");
-static const QCommandLineOption groupLocationOption("location", "Location name for folder grouping.", "<location>");
-static const QCommandLineOption groupEventOption("event", "Event name for folder grouping.", "<event>");
+// task flags
+static const QCommandLineOption filterRegexOption("match", "[list-option] Match the filenames against the given regex.", "regex");
+static const QCommandLineOption filterAfterDateOption("after", "[list-option] Filter the images to be created after the given date.", "datetime");
+static const QCommandLineOption filterBeforeDateOption("before", "[list-option] Filter the images to be created before the given date.", "datetime");
+static const QCommandLineOption renameFormatOption("format", "Date time format for renaming the images. Default is UPA scheme: yyyyMMdd_HHmmsszzz", "datetime-format", "yyyyMMdd_HHmmsszzz");
+static const QCommandLineOption groupLocationOption("location", "Location name for folder grouping.", "location");
+static const QCommandLineOption groupEventOption("event", "Event name for folder grouping.", "event");
 static const QCommandLineOption transformWorkOnCopyFlag({"copy", "keep-original"}, "Keeps the original image and works on a renamed copy.");
-static const QCommandLineOption transformShrinkWidthOption({"w", "width"}, "New image width in px.", "<width>");
-static const QCommandLineOption transformShrinkWidthOption({"h", "height"}, "New image height in px.", "<height>");
-static const QCommandLineOption transformFormatOption("format", "New image format (check supported formats with --supported-formats).", "<format>");
-static const QCommandLineOption transformQualityOption("quality", "New image quality between 0 and 100. Default: 70", "<quality>", "70");
-
-void registerFileFlags(QCommandLineParser & parser) {
-    parser.addOptions({sourceDirectoryOption, targetDirectoryOption, searchRecursivelyFlag});
-}
-void initFileFlags(const QCommandLineParser & parser) {
-    // IOFlags::recursive = false;
-    // IOFlags::skipExisting = false;
-    // IOFlags::force = false;
-    // IOFlags::dryRun = false;
-    // IOFlags::progressBar = false;
-}
+static const QCommandLineOption transformShrinkWidthOption({"w", "width"}, "New image width in px.", "width");
+static const QCommandLineOption transformShrinkHeightOption({"h", "height"}, "New image height in px.", "height");
+static const QCommandLineOption transformFormatOption("format", "New image format (check supported formats with --supported-formats).", "format");
+static const QCommandLineOption transformQualityOption("quality", "New image quality between 0 and 100. Default: 70", "quality", "70");
 
 static const QMap<QString, Task> tasks({
     std::make_pair("list", Task {
         [](QCommandLineParser & parser) {
-            
+            parser.clearPositionalArguments();
+            parser.addPositionalArgument("list", "Lists all images found in the source directories.", "list [list-options]");
+            parser.addOptions({filterRegexOption, filterAfterDateOption, filterBeforeDateOption});
         },
         [](QCommandLineParser & parser) {
-            _debug() << "list";
-            try {
-                _debug() << lib_utils::io_ops::filepath_ops::pathSetDatedFileBaseName("./", "yyyyMMdd_HHmmsszzz", QDateTime::currentDateTime());
-                _debug() << lib_utils::io_ops::filepath_ops::pathInsertDatedDirectory("./", "yyyyMMdd", QDate::currentDate());
-                // _debug() << lib_utils::io_ops::listFiles("./", false).join("\n");
-            } catch (const QString & ex) {
-                fatalExit(ex);
+            using namespace IOSettings;
+            _debug() << QString("rec=%1").arg(recursive);
+            _debug() << QString("s=%1").arg(sourceDirectories.join("; "));
+            QRegExp regex = QRegExp(".*");
+            if(parser.isSet(filterRegexOption)) {
+                QString regexValue = parser.value(filterRegexOption);
+                regex = QRegExp(regexValue);
+                if(!regex.isValid()) {
+                    abnormalExit(QString("Invalid regex given \"%1\"").arg(regexValue), 3);
+                }
             }
+            for(const auto & source : sourceDirectories) {
+                auto fileList = lib_utils::io_ops::listFiles(source, recursive, regex);
+                for(const auto & file : fileList) {
+                    _info() << "* " << file;
+                }
+            }
+            // _debug() << QString("t=%1").arg(targetDirectories.join("; "));
+            // _debug() << QString("se=%1").arg(skipExisting);
+            // _debug() << QString("f=%1").arg(force);
+            // _debug() << QString("dr=%1").arg(dryRun);
+            // _debug() << QString("p=%1").arg(progressBar);
+    // bool skipExisting = false;
+    // bool force = false;
+    // bool dryRun = false;
+    // bool progressBar = false;
+            // try {
+            //     _debug() << lib_utils::io_ops::filepath_ops::pathSetDatedFileBaseName("./", "yyyyMMdd_HHmmsszzz", QDateTime::currentDateTime());
+            //     _debug() << lib_utils::io_ops::filepath_ops::pathInsertDatedDirectory("./", "yyyyMMdd", QDate::currentDate());
+            //     // _debug() << lib_utils::io_ops::listFiles("./", false).join("\n");
+            // } catch (const QString & ex) {
+            //     fatalExit(ex);
+            // }
             return 0;
         }
     }),
@@ -402,34 +442,13 @@ static const QMap<QString, Task> tasks({
     })
 });
 
-void initApplication(QCoreApplication & app) {
-    // Setting the application name is not required, since, if not set, it defaults to the executable name.
-    app.setApplicationName(APP_NAME);
-    app.setApplicationVersion(APP_VERSION.toString());
-    
-    // Read pscom version with format "%appName% version %appVersion% | pscom-%pscomVersion% qt-%qtVersion%"
-    auto libVersion = pscom::vi();
-    auto libVersionMessage = libVersion.right(libVersion.length() - libVersion.indexOf("pscom-", 1));
-    
-    QString versionString("v%2 | %3");
-    app.setApplicationVersion(versionString
-        .arg(app.applicationVersion())
-        .arg(libVersionMessage));
-}
-
-// Verbosity flags instead of --verbosity levels
-static const QCommandLineOption quietFlag({"q", "quiet", "silent"}, "Sets the output to silent log level (no output, fails silently).");
-static const QCommandLineOption verboseFlag({"verbose", "debug"}, "Sets the output to debug log level.");
-static const QCommandLineOption suppressWarningsFlag("suppress-warnings", "Suppresses warnings but keeps every other output.");
-
-static const QCommandLineOption supportedFormatsFlag("supported-formats", "Lists the supported file formats.");
-
 void initParserAndLogging(const QCoreApplication & app, QCommandLineParser & parser) {
 	parser.addVersionOption();
 	parser.addHelpOption();
     parser.addOptions({quietFlag, verboseFlag, suppressWarningsFlag});
     parser.addPositionalArgument("task", QString("One of the following:\n%1")
-        .arg(QStringList(tasks.keys()).join(", ")), "<task> [<args>]");
+        .arg(QStringList(tasks.keys()).join(", ")), "<task> [...]");
+    parser.addOptions({sourceDirectoryOption, searchRecursivelyFlag});
     parser.setApplicationDescription(QString("Welcome to %1 - your simple command line UPA.").arg(APP_NAME));
     if(app.arguments().count() <= 1) {
         // exit with error code 1 because the user didn't supply any arguments
@@ -493,6 +512,9 @@ int main(int argc, char *argv[])
         _debug() << QString("Starting task \"%1\"").arg(taskName);
         task.parameterInitializer(parser);
 	    parser.process(app);
+
+        IOSettings::recursive = parser.isSet(searchRecursivelyFlag);
+        IOSettings::sourceDirectories = parser.values(sourceDirectoryOption);
     }
     return task.taskHandler(parser);
     // return app.exec();
