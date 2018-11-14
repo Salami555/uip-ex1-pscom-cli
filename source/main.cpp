@@ -5,6 +5,8 @@
 #include <QCommandLineOption>
 #include <QCommandLineParser>
 #include <QDebug>
+#include <QDir>
+#include <QFileInfo>
 #include <QRegExp>
 #include <QVersionNumber>
 #include <iostream>
@@ -78,9 +80,7 @@ void fatalExit(const QString & message, int terminationCode = -1) {
     std::exit(terminationCode);
 }
 
-bool userConfirmation(const QString & message, bool force = false) {
-    if(force)
-        return true;
+bool userConfirmation(const QString & message) {
     if(Logging::quiet)
         fatalExit("required confirmation in quiet mode");
     clearProgressBar();
@@ -110,20 +110,23 @@ static int log10(int i) {
         ? 2 : (i >= 10)
         ? 1 : 0; 
 }
-QString progressMessage(int pos, int total, QString operation, QString filepath) {
+QString progressMessage(int pos, int total, const QString & operation) {
     int size = log10(total); 
-    return QString("File %1/%2: %3 %4")
+    return QString("[%1/%2]: %3")
         .arg(pos, size)
         .arg(total, size)
-        .arg(operation)
-        .arg(filepath);
+        .arg(operation);
 }
 
 namespace IOSettings {
-    QStringList sourceDirectories, targetDirectories;
+    QStringList sourceDirectories;
+    QString targetDirectory = "./";
+    QRegExp filterRegex(".*");
+    QString filterDateFormat = "yyyy-MM-dd";
+    QDateTime filterDateTimeAfter, filterDateTimeBefore;
     bool recursive = false;
     bool skipExisting = false;
-    bool force = false;
+    bool forceOverwrite = false;
     bool dryRun = false;
     bool progressBar = false;
 }
@@ -150,6 +153,11 @@ namespace lib_utils {
                     throw "file not found";
                 }
                 return pscom::fs(filepath);
+            }
+            QString fileName(const QString & filepath) {
+                // missing this in the library
+                const auto fi = QFileInfo(filepath);
+                return fi.completeBaseName() + '.' + fi.suffix();
             }
             QString pathSetFileExtension(const QString & filepath, const QString & extension) {
                 if(!supportedFormats().contains(extension)) {
@@ -182,11 +190,24 @@ namespace lib_utils {
             }
             return IOSettings::dryRun || pscom::rm(filepath);
         }
-        // bool copyFile(const QString & sourceFilepath, const QString & targetFilepath, bool force = false) {
-        //     // TODO
-        //     return dryRun || pscom::cp(sourceFilepath, targetFilepath);
-        // }
-        bool moveFile(const QString & sourceFilepath, const QString & targetFilepath, bool force = false) {
+        bool isFileOverwritePermitted(
+            const QString & targetFilepath, const QString & confirmationMessge,
+            bool force = false, bool userConfirm = true
+        ) {
+            if(!force) {
+                if(!userConfirm || !userConfirmation(confirmationMessge)) {
+                    _debug() << QString("Skipped file \"%1\"").arg(targetFilepath);
+                    return false;
+                }
+            }
+            _debug() << QString("Removing file \"%1\"").arg(targetFilepath);
+            if(!removeFile(targetFilepath)) {
+                _warn() << QString("Removing file failed \"%1\"").arg(targetFilepath);
+                return false;
+            }
+            return true;
+        }
+        bool copyFile(const QString & sourceFilepath, const QString & targetFilepath, bool force = false, bool userConfirm = true) {
             if(sourceFilepath == targetFilepath) {
                 _debug() << QString("Equal source and target file \"%1\"").arg(sourceFilepath);
                 return true;
@@ -196,15 +217,28 @@ namespace lib_utils {
                 return false;
             }
             if(isPathExistingFile(targetFilepath)) {
-                _debug() << QString("Target file already exists \"%1\"").arg(targetFilepath);
-                if(!userConfirmation(QString("Overwrite file \"%1\" with \"%2\"?")
-                    .arg(targetFilepath).arg(sourceFilepath), force)) {
-                    _info() << QString("Skipped file \"%1\"").arg(targetFilepath);
+                if(!isFileOverwritePermitted(targetFilepath, QString("Overwrite file \"%1\" with \"%2\"?")
+                    .arg(targetFilepath).arg(sourceFilepath), force, userConfirm)) {
+                    _warn() << QString("Copying file failed caused by existing target \"%1\"").arg(targetFilepath);
                     return false;
                 }
-                _debug() << QString("Removing file \"%1\"").arg(targetFilepath);
-                if(!removeFile(targetFilepath)) {
-                    _warn() << QString("Removing file failed \"%1\"").arg(sourceFilepath);
+            }
+            _debug() << QString("Copying file \"%1\" to \"%2\"").arg(sourceFilepath).arg(targetFilepath);
+            return IOSettings::dryRun || pscom::cp(sourceFilepath, targetFilepath);
+        }
+        bool moveFile(const QString & sourceFilepath, const QString & targetFilepath, bool force = false, bool userConfirm = true) {
+            if(sourceFilepath == targetFilepath) {
+                _debug() << QString("Equal source and target file \"%1\"").arg(sourceFilepath);
+                return true;
+            }
+            if(!isPathExistingFile(sourceFilepath)) {
+                _warn() << QString("File not found \"%1\"").arg(sourceFilepath);
+                return false;
+            }
+            if(isPathExistingFile(targetFilepath)) {
+                if(!isFileOverwritePermitted(targetFilepath, QString("Overwrite file \"%1\" with \"%2\"?")
+                    .arg(targetFilepath).arg(sourceFilepath), force, userConfirm)) {
+                    _warn() << QString("Moving file failed caused by existing target \"%1\"").arg(targetFilepath);
                     return false;
                 }
             }
@@ -215,7 +249,7 @@ namespace lib_utils {
             return moveFile(sourceFilepath, targetFilepath, true);
         }
 
-        bool createDirectory(const QString & path) {
+        bool createDirectories(const QString & path) {
             if(isPathExisting(path)) {
                 return true;
             }
@@ -237,55 +271,84 @@ namespace lib_utils {
         //     return moveDirectory(sourcePath, targetPath);
         // }
         
-        QStringList listFiles(const QString & path, bool recursive, const QRegExp & regex = QRegExp(".*")) {
-            if(!isPathExistingDirectory(path)) {
-                throw QString("Directory not found \"%1\"").arg(path);
-            }
-            _debug() << QString("Listing directory \"%1\"").arg(path);
-            return pscom::re(path, regex, recursive);
-        }
-        void filter(QStringList & filelist, std::function<bool (const QString &)> filter) {
-            QMutableStringListIterator i(filelist);
+        void filter(QStringList & fileList, std::function<bool (const QString &)> filter) {
+            QMutableStringListIterator i(fileList);
             while(i.hasNext()) {
                 if(!filter(i.next())) {
                     i.remove();
                 }
             }
         }
-        void filterMinDateFileList(QStringList & filelist, const QDateTime & minDateTime) {
-            filter(filelist, [&](const QString & file) {
-                return minDateTime < fileCreationDateTime(file);
+        void filterFileListExtensions(QStringList & fileList, const QStringList & extensionList) {
+            filter(fileList, [&](const QString & filename) {
+                return isPathExistingFile(filename)
+                    && extensionList.contains(filepath_ops::fileExtension(filename));
             });
         }
-        void filterMaxDateFileList(QStringList & filelist, const QDateTime & maxDateTime) {
-            filter(filelist, [&](const QString & file) {
-                return fileCreationDateTime(file) < maxDateTime;
+        void filterFileListDateAfter(QStringList & fileList, const QDateTime & minDateTime) {
+            filter(fileList, [&](const QString & filename) {
+                return minDateTime < fileCreationDateTime(filename);
             });
+        }
+        void filterFileListDateBefore(QStringList & fileList, const QDateTime & maxDateTime) {
+            filter(fileList, [&](const QString & filename) {
+                return fileCreationDateTime(filename) < maxDateTime;
+            });
+        }
+        QStringList listFiles(const QString & path, bool recursive, const QRegExp & regex = QRegExp(".*")) {
+            if(!isPathExistingDirectory(path)) {
+                abnormalExit(QString("Source directory not found \"%1\"").arg(path), 6);
+            }
+            _debug() << QString("Listing directory \"%1\"").arg(path);
+            auto fileList = pscom::re(path, regex, recursive);
+            filterFileListExtensions(fileList, supportedFormats());
+            _debug() << QString("%1 supported files found").arg(fileList.count());
+            return fileList;
+        }
+        QStringList listFiles(const QStringList & paths, bool recursive, const QRegExp & regex = QRegExp(".*")) {
+            QStringList files;
+            for(const QString & path : paths) {
+                files.append(listFiles(path, recursive, regex));
+            }
+            return files;
+        }
+        QStringList listFiles() {
+            using namespace IOSettings;
+            auto fileList = listFiles(sourceDirectories, recursive, filterRegex);
+            if(filterDateTimeAfter.isValid()) {
+                filterFileListDateAfter(fileList, filterDateTimeAfter);
+            }
+            if(filterDateTimeBefore.isValid()) {
+                filterFileListDateBefore(fileList, filterDateTimeBefore);
+            }
+            _debug() << QString("%1 filtered files found").arg(fileList.count());
+            return fileList;
         }
 
-        // QStringList moveFiles(const QStringList & filepaths, std::function<void (const QString &, bool, int, int)> fileCompletionCallback) {
-        //     if(filepaths.empty())
-        //         return QStringList();
-            
-        //     QStringList unsuccessful;
-        //     const int total = filepaths.count();
-        //     for(int i = 0; i < total; ++i) {
-        //         const QString filepath = filepaths[i];
-        //         const int pos = i + 1;
-        //         _debug() << progressMessage(pos, total, "Moving", filepath);
-        //         if(IOSettings::progressBar) drawProgressBar((pos-1)/total);
-        //         bool success = false;
-        //         // todo move
-        //         fileCompletionCallback(filepath, success, pos, total);
-        //         _info() << progressMessage(pos, total, "Moving", filepath);
-        //         if(IOSettings::progressBar) drawProgressBar(pos/total);
-        //         if(!success) {
-        //             unsuccessful << filepath;
-        //         }
-        //     }
-        //     clearProgressBar();
-        //     return unsuccessful;
-        // }
+        QStringList multiFileOperation(
+            const QStringList & fileList,
+            std::function<QString (const QString &)> operationMessage,
+            std::function<bool (const QString &)> operation,
+            bool silent = false
+        ) {
+            QStringList unsuccessful;
+            const int total = fileList.count();
+            for(int i = 0; i < total; ++i) {
+                const QString filepath = fileList[i];
+                const int pos = i + 1;
+                if(!silent)
+                    _info() << progressMessage(pos, total, operationMessage(filepath));
+                // if(IOSettings::progressBar) drawProgressBar((pos-1)/total);
+                bool success = operation(filepath);
+                _debug() << progressMessage(pos, total, QString("Finished %1").arg(operationMessage(filepath)));
+                // if(IOSettings::progressBar) drawProgressBar(pos/total);
+                if(!success) {
+                    unsuccessful << filepath;
+                }
+            }
+            // clearProgressBar();
+            return unsuccessful;
+        }
     }
 }
 
@@ -322,66 +385,116 @@ static const QCommandLineOption supportedFormatsFlag("supported-formats", "Lists
 
 // general task flags
 static const QCommandLineOption searchRecursivelyFlag({"r", "recursive"}, "Traverse the directory recursively.");
-static const QCommandLineOption sourceDirectoryOption({"s", "source"}, "Source directory.", "source directory", "./");
+static const QCommandLineOption sourceDirectoryOption({"s", "source", "dir"}, "Source directory.", "source directory", "./");
+static const QCommandLineOption filterRegexOption({"match", "regex"}, "Match the filenames against the given regex.", "regex");
+static const QCommandLineOption filterDateFormatOption("datetime-format", "Used format for filtering with --after or --before. Default: yyyy-MM-dd (ISO 8601)", "datetime-format", "yyyy-MM-dd");
+static const QCommandLineOption filterDateTimeAfterOption("after", "Filter the images to be created after the given date (exclusive).", "datetime");
+static const QCommandLineOption filterDateTimeBeforeOption("before", "Filter the images to be created before the given date (exclusive).", "datetime");
 
 // specific task flags
-static const QCommandLineOption targetDirectoryOption({"t", "target"}, "Target directory.", "target directory", "./");
+static const QCommandLineOption targetDirectoryOption({"t", "target", "dest"}, "Target directory.", "target directory", "./");
 static const QCommandLineOption progressBarFlag({"p", "progress"}, "Show a progress bar (if the task supports it).");
 static const QCommandLineOption fileOPsSkipExistingFlag({"skip", "skip-existing"}, "Skip existing images without asking.");
 static const QCommandLineOption fileOPsForceOverwriteFlag({"force", "overwrite"}, "Overwrite existing images without asking.");
+static const QCommandLineOption fileOPsCreateDirectoriesFlag({"mkdirs", "create-directories"}, "Creates missing directories.");
 static const QCommandLineOption fileOPsDryRunFlag({"dry-run", "noop"}, "Simulate every file operation without actually doing it.");
 
 // task flags
-static const QCommandLineOption filterRegexOption("match", "[list-option] Match the filenames against the given regex.", "regex");
-static const QCommandLineOption filterAfterDateOption("after", "[list-option] Filter the images to be created after the given date.", "datetime");
-static const QCommandLineOption filterBeforeDateOption("before", "[list-option] Filter the images to be created before the given date.", "datetime");
-static const QCommandLineOption renameFormatOption("format", "Date time format for renaming the images. Default is UPA scheme: yyyyMMdd_HHmmsszzz", "datetime-format", "yyyyMMdd_HHmmsszzz");
+static const QCommandLineOption renameFormatOption("scheme", "Date time format for renaming the images. Default is UPA scheme: yyyyMMdd_HHmmsszzz", "datetime-format", "yyyyMMdd_HHmmsszzz");
 static const QCommandLineOption groupLocationOption("location", "Location name for folder grouping.", "location");
 static const QCommandLineOption groupEventOption("event", "Event name for folder grouping.", "event");
-static const QCommandLineOption transformWorkOnCopyFlag({"copy", "keep-original"}, "Keeps the original image and works on a renamed copy.");
+static const QCommandLineOption transformCopySuffixOption("suffix", "Keeps the original image and works on a renamed copy with suffixed file base name. Default: _new", "suffix", "_new");
 static const QCommandLineOption transformShrinkWidthOption({"w", "width"}, "New image width in px.", "width");
 static const QCommandLineOption transformShrinkHeightOption({"h", "height"}, "New image height in px.", "height");
 static const QCommandLineOption transformFormatOption("format", "New image format (check supported formats with --supported-formats).", "format");
 static const QCommandLineOption transformQualityOption("quality", "New image quality between 0 and 100. Default: 70", "quality", "70");
 
+void registerFileListingSettings(QCommandLineParser & parser) {
+    parser.addOptions({sourceDirectoryOption, searchRecursivelyFlag});
+    parser.addOptions({filterRegexOption, filterDateFormatOption, filterDateTimeAfterOption, filterDateTimeBeforeOption});
+}
+void parseFileListingSettings(const QCommandLineParser & parser) {
+    using namespace IOSettings;
+    recursive = parser.isSet(searchRecursivelyFlag);
+    sourceDirectories = parser.values(sourceDirectoryOption);
+    if(parser.isSet(filterRegexOption)) {
+        QString regexString = parser.value(filterRegexOption);
+        filterRegex = QRegExp(regexString);
+        if(!filterRegex.isValid()) {
+            abnormalExit(QString("Invalid regex given \"%1\"").arg(regexString), 3);
+        }
+        _debug() << QString("Filtering directories using regex=\"%1\"").arg(regexString);
+    }
+    if(parser.isSet(filterDateFormatOption)) {
+        filterDateFormat = parser.value(filterDateFormatOption);
+        _debug() << QString("Using filter datetime format=\"%1\"").arg(filterDateFormat);
+    }
+    if(parser.isSet(filterDateTimeAfterOption)) {
+        QString datetimeString = parser.value(filterDateTimeAfterOption);
+        filterDateTimeAfter = QDateTime::fromString(datetimeString, filterDateFormat);
+        if(!filterDateTimeAfter.isValid()) {
+            _warn() << QString("Invalid filter after datetime \"%1\" using format \"%2\"")
+                .arg(datetimeString).arg(filterDateFormat);
+        }
+        _debug() << QString("Filtering directories using date after=\"%1\"").arg(datetimeString);
+    }
+    if(parser.isSet(filterDateTimeBeforeOption)) {
+        QString datetimeString = parser.value(filterDateTimeBeforeOption);
+        filterDateTimeBefore = QDateTime::fromString(datetimeString, filterDateFormat);
+        if(!filterDateTimeBefore.isValid()) {
+            _warn() << QString("Invalid filter before datetime \"%1\" using format \"%2\"")
+                .arg(datetimeString).arg(filterDateFormat);
+        }
+        _debug() << QString("Filtering directories using date before=\"%1\"").arg(datetimeString);
+    }
+}
+void registerIOSettings(QCommandLineParser & parser) {
+    parser.addOptions({targetDirectoryOption, fileOPsCreateDirectoriesFlag});
+    parser.addOptions({progressBarFlag, fileOPsDryRunFlag, fileOPsForceOverwriteFlag, fileOPsSkipExistingFlag});
+}
+void parseIOSettings(const QCommandLineParser & parser) {
+    using namespace IOSettings;
+    progressBar = parser.isSet(progressBarFlag);
+    dryRun = parser.isSet(fileOPsDryRunFlag);
+    forceOverwrite = parser.isSet(fileOPsForceOverwriteFlag);
+    skipExisting = parser.isSet(fileOPsSkipExistingFlag);
+    if(parser.isSet(targetDirectoryOption)) {
+        targetDirectory = parser.value(targetDirectoryOption);
+        if(!targetDirectory.endsWith(QDir::separator())) {
+            targetDirectory.append(QDir::separator());
+        }
+        using namespace lib_utils::io_ops;
+        if(!isPathExisting(targetDirectory)) {
+            if(!parser.isSet(fileOPsCreateDirectoriesFlag)) {
+                // todo add user confirmation
+                abnormalExit(QString("Target directory does not exist \"%1\"").arg(targetDirectory), 4);
+            }
+            if(createDirectories(targetDirectory)) {
+                _debug() << QString("Created target directory \"%1\"").arg(targetDirectory);
+            } else {
+                abnormalExit(QString("Target directory could not be created \"%1\"").arg(targetDirectory), 5);
+            }
+        }
+    }
+}
+
 static const QMap<QString, Task> tasks({
     std::make_pair("list", Task {
         [](QCommandLineParser & parser) {
             parser.clearPositionalArguments();
-            parser.addPositionalArgument("list", "Lists all images found in the source directories.", "list [list-options]");
-            parser.addOptions({filterRegexOption, filterAfterDateOption, filterBeforeDateOption});
+            parser.addPositionalArgument("list", "Lists all (filtered) images found in the source directories.", "list [list-options]");
+            registerFileListingSettings(parser);
         },
         [](QCommandLineParser & parser) {
-            using namespace IOSettings;
-            _debug() << QString("rec=%1").arg(recursive);
-            _debug() << QString("s=%1").arg(sourceDirectories.join("; "));
-            QRegExp regex = QRegExp(".*");
-            if(parser.isSet(filterRegexOption)) {
-                QString regexValue = parser.value(filterRegexOption);
-                regex = QRegExp(regexValue);
-                if(!regex.isValid()) {
-                    abnormalExit(QString("Invalid regex given \"%1\"").arg(regexValue), 3);
-                }
+            parseFileListingSettings(parser);
+            auto fileList = lib_utils::io_ops::listFiles();
+            const int total = fileList.count();
+            for(int i = 0; i < total; ++i) {
+                _info() << progressMessage(i+1, total, fileList[i]);
             }
-            for(const auto & source : sourceDirectories) {
-                auto fileList = lib_utils::io_ops::listFiles(source, recursive, regex);
-                for(const auto & file : fileList) {
-                    _info() << "* " << file;
-                }
-            }
-            // _debug() << QString("t=%1").arg(targetDirectories.join("; "));
-            // _debug() << QString("se=%1").arg(skipExisting);
-            // _debug() << QString("f=%1").arg(force);
-            // _debug() << QString("dr=%1").arg(dryRun);
-            // _debug() << QString("p=%1").arg(progressBar);
-    // bool skipExisting = false;
-    // bool force = false;
-    // bool dryRun = false;
-    // bool progressBar = false;
             // try {
             //     _debug() << lib_utils::io_ops::filepath_ops::pathSetDatedFileBaseName("./", "yyyyMMdd_HHmmsszzz", QDateTime::currentDateTime());
             //     _debug() << lib_utils::io_ops::filepath_ops::pathInsertDatedDirectory("./", "yyyyMMdd", QDate::currentDate());
-            //     // _debug() << lib_utils::io_ops::listFiles("./", false).join("\n");
             // } catch (const QString & ex) {
             //     fatalExit(ex);
             // }
@@ -390,17 +503,42 @@ static const QMap<QString, Task> tasks({
     }),
     std::make_pair("copy", Task {
         [](QCommandLineParser & parser) {
-            _debug() << "init copy";
+            parser.clearPositionalArguments();
+            parser.addPositionalArgument("copy", "Copy all (filtered) images found in the source directories to the target directory.", "copy [copy-options]");
+            registerFileListingSettings(parser);
+            registerIOSettings(parser);
         },
         [](QCommandLineParser & parser) {
-            _debug() << "copy";
-            _debug() << (lib_utils::io_ops::moveFile("test2.txt", "test.txt") ? "success" : "failure");
-            // auto unsuccessful = lib_utils::io_ops::moveFiles({"test - Kopie.txt"}, [](const QString & filepath, bool success, int i, int total) {
-            //     _debug() << filepath << success << i << total;
-            // });
-            // if(!unsuccessful.empty()) {
-            //     _warn() << QString("Unsuccessfully moved files: %1").arg(unsuccessful.count());
-            // }
+            parseFileListingSettings(parser);
+            parseIOSettings(parser);
+            using namespace lib_utils::io_ops;
+            using namespace IOSettings;
+            auto fileList = listFiles();
+            const int total = fileList.count();
+            auto problemFileList = multiFileOperation(fileList,
+                [](const QString & filepath) {
+                    return QString("Copying %1").arg(filepath);
+                },
+                [](const QString & filepath) {
+                    const auto targetpath = targetDirectory + filepath_ops::fileName(filepath);
+                    return copyFile(filepath, targetpath, forceOverwrite, false);
+                }
+            );
+            if(!problemFileList.empty()) {
+                _info() << QString("Found %1 files with problems").arg(problemFileList.count());
+            }
+            auto finalProblems = multiFileOperation(problemFileList,
+                [](const QString & filepath) {
+                    return QString("Retry copying %1").arg(filepath);
+                },
+                [](const QString & filepath) {
+                    const auto targetpath = targetDirectory + filepath_ops::fileName(filepath);
+                    return copyFile(filepath, targetpath, false, true);
+                },
+                true
+            );
+            _info() << QString("Copying completed (%1 file(s) copied)!")
+                .arg(total - finalProblems.count());
             return 0;
         }
     }),
@@ -448,7 +586,6 @@ void initParserAndLogging(const QCoreApplication & app, QCommandLineParser & par
     parser.addOptions({quietFlag, verboseFlag, suppressWarningsFlag});
     parser.addPositionalArgument("task", QString("One of the following:\n%1")
         .arg(QStringList(tasks.keys()).join(", ")), "<task> [...]");
-    parser.addOptions({sourceDirectoryOption, searchRecursivelyFlag});
     parser.setApplicationDescription(QString("Welcome to %1 - your simple command line UPA.").arg(APP_NAME));
     if(app.arguments().count() <= 1) {
         // exit with error code 1 because the user didn't supply any arguments
@@ -512,9 +649,6 @@ int main(int argc, char *argv[])
         _debug() << QString("Starting task \"%1\"").arg(taskName);
         task.parameterInitializer(parser);
 	    parser.process(app);
-
-        IOSettings::recursive = parser.isSet(searchRecursivelyFlag);
-        IOSettings::sourceDirectories = parser.values(sourceDirectoryOption);
     }
     return task.taskHandler(parser);
     // return app.exec();
