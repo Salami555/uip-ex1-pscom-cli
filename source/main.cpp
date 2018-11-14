@@ -20,6 +20,11 @@
  * - prefer qDebug, qInfo, qWarning, qCritical, and qFatal for verbosity and console output.
  */
 
+QTextStream & _stdout() {
+    QTextStream out(stdout, QIODevice::WriteOnly | QIODevice::Unbuffered);
+    return out;
+}
+
 bool progressBarVisible = false;
 const int progressBarWidth = 42;
 const char
@@ -32,18 +37,18 @@ void drawProgressBar(double progress, bool newLine = false) {
     if(progress > 1) progress = 1;
 
     const int width = (int) (progressBarWidth * progress);
-    QTextStream(stdout) << QString("[%1] %L2%")
+    _stdout() << QString("[%1] %L2%")
         .arg(QString(filledProgress).repeated(width), -progressBarWidth, emptyProgress)
         .arg(progress * 100, 5, 'f', 1);
     progressBarVisible = true;
     if(newLine) {
-        QTextStream(stdout) << '\n';
+        _stdout() << '\n';
         progressBarVisible = false;
     }
 }
 void clearProgressBar() {
     if(progressBarVisible) {
-        QTextStream(stdout) << "\r"
+        _stdout() << "\r"
             << QString(" ").repeated(progressBarWidth + 9) // "[" + bar{width} + "] " + number{5} + "%"
             << "\r";
         progressBarVisible = false;
@@ -123,6 +128,7 @@ namespace lib_utils {
         bool recursive = false;
         bool forceOp = false;
         bool dryRun = false;
+        bool progressBar = false;
 
         bool isPathExistingDirectory(const QString & path) {
             return pscom::de(path);
@@ -263,12 +269,12 @@ namespace lib_utils {
         //         const QString filepath = filepaths[i];
         //         const int pos = i + 1;
         //         _debug() << progressMessage(pos, total, "Moving", filepath);
-        //         drawProgressBar((pos-1)/total);
+        //         if(progressBar) drawProgressBar((pos-1)/total);
         //         bool success = false;
         //         // todo move
         //         fileCompletionCallback(filepath, success, pos, total);
         //         _info() << progressMessage(pos, total, "Moving", filepath);
-        //         drawProgressBar(pos/total);
+        //         if(progressBar) drawProgressBar(pos/total);
         //         if(!success) {
         //             unsuccessful << filepath;
         //         }
@@ -286,6 +292,14 @@ struct Command {
 
 static const QString APP_NAME("pscom-cli");
 static const QVersionNumber APP_VERSION(1, 0, 0);
+
+// Command specific flags
+static const QCommandLineOption listRecursiveFlag({"r", "recursive"}, "Traverse the directory recursively.");
+static const QCommandLineOption filterFilesRegexOption("match", "Match the filenames against the given regex.", "<REGEX>");
+static const QCommandLineOption filterFilesAfterDateOption("after", "Filter the files to be created after the given date.", "<DATETIME>");
+static const QCommandLineOption filterFilesBeforeDateOption("before", "Filter the files to be created before the given date.", "<DATETIME>");
+static const QCommandLineOption progressBarFlag({"p", "progress"}, "Show a progress bar (if the task supports it).");
+
 static const QMap<QString, Command> commands({
     std::make_pair("list", Command {
         [](QCommandLineParser & parser) {
@@ -294,7 +308,7 @@ static const QMap<QString, Command> commands({
         [](QCommandLineParser & parser) {
             _debug() << "list";
             try {
-                _debug() << lib_utils::io_ops::listFiles("", false).join("\n");
+                _debug() << lib_utils::io_ops::listFiles("./", false).join("\n");
             } catch (const QString & ex) {
                 fatalExit(ex);
             }
@@ -391,7 +405,7 @@ void initApplication(QCoreApplication & app) {
 // Verbosity flags instead of --verbosity levels
 static const QCommandLineOption quietFlag({"q", "quiet", "silent"}, "Sets the output to silent log level (no output, fails silently).");
 static const QCommandLineOption verboseFlag({"verbose", "debug"}, "Sets the output to debug log level.");
-static const QCommandLineOption suppressWarningsFlag("suppress-warnings", "Supresses warnings but keeps every other output.");
+static const QCommandLineOption suppressWarningsFlag("suppress-warnings", "Suppresses warnings but keeps every other output.");
 
 static const QCommandLineOption supportedFormatsFlag("supported-formats", "Lists the supported file formats.");
 
@@ -425,11 +439,6 @@ void showSupportedFormats() {
         _info() << lib_utils::supportedFormats().join("|");
     }
 }
-
-static const QCommandLineOption listRecursiveFlag("recursive");
-static const QCommandLineOption listFilterDateAfter("after", "Filters the files beeing created after the given date.", "<DATETIME>");
-static const QCommandLineOption listFilterDateBefore("before", "Filters the files beeing created before the given date.", "<DATETIME>");
-static const QCommandLineOption listFilterRegex("match", "Matches the filenames against the given regex.", "<REGEX>");
 
 int main(int argc, char *argv[])
 {
