@@ -126,7 +126,8 @@ namespace lib_utils {
 
     namespace io_ops {
         bool recursive = false;
-        bool forceOp = false;
+        bool skipExisting = false;
+        bool force = false;
         bool dryRun = false;
         bool progressBar = false;
 
@@ -288,17 +289,24 @@ namespace lib_utils {
 struct Command {
     std::function<void (QCommandLineParser &)> parameterInitializer;
     std::function<int (QCommandLineParser &)> commandHandler;
+    bool unknown;
 };
 
 static const QString APP_NAME("pscom-cli");
 static const QVersionNumber APP_VERSION(1, 0, 0);
 
 // Command specific flags
-static const QCommandLineOption listRecursiveFlag({"r", "recursive"}, "Traverse the directory recursively.");
-static const QCommandLineOption filterFilesRegexOption("match", "Match the filenames against the given regex.", "<REGEX>");
-static const QCommandLineOption filterFilesAfterDateOption("after", "Filter the files to be created after the given date.", "<DATETIME>");
-static const QCommandLineOption filterFilesBeforeDateOption("before", "Filter the files to be created before the given date.", "<DATETIME>");
+static const QCommandLineOption listFilesRecursivelyFlag({"r", "recursive"}, "Traverse the directory recursively.");
+static const QCommandLineOption filterFilesRegexOption("match", "Match the filenames against the given regex.", "<regex>");
+static const QCommandLineOption filterFilesAfterDateOption("after", "Filter the files to be created after the given date.", "<datetime>");
+static const QCommandLineOption filterFilesBeforeDateOption("before", "Filter the files to be created before the given date.", "<datetime>");
 static const QCommandLineOption progressBarFlag({"p", "progress"}, "Show a progress bar (if the task supports it).");
+static const QCommandLineOption fileOPsSkipExistingFlag({"skip", "skip-existing"}, "Skip existing files without asking.");
+static const QCommandLineOption fileOPsForceOverwriteFlag({"force", "overwrite"}, "Overwrite existing files without asking.");
+static const QCommandLineOption fileOPsDryRunFlag({"dry-run", "noop"}, "Simulate every file operation without actually doing it.");
+static const QCommandLineOption renameFilesFormatOption("format", "Date time format for renaming the files. Default is UPA scheme: yyyyMMdd_HHmmsszzz", "<datetime-format>", "yyyyMMdd_HHmmsszzz");
+static const QCommandLineOption groupFilesLocationOption("location", "Location name for grouping into folders.", "<location>");
+static const QCommandLineOption groupFilesEventOption("event", "Event name for grouping into folders.", "<event>");
 
 static const QMap<QString, Command> commands({
     std::make_pair("list", Command {
@@ -308,7 +316,9 @@ static const QMap<QString, Command> commands({
         [](QCommandLineParser & parser) {
             _debug() << "list";
             try {
-                _debug() << lib_utils::io_ops::listFiles("./", false).join("\n");
+                _debug() << lib_utils::io_ops::filepath_ops::pathSetDatedFileBaseName("./", "yyyyMMdd_HHmmsszzz", QDateTime::currentDateTime());
+                _debug() << lib_utils::io_ops::filepath_ops::pathInsertDatedDirectory("./", "yyyyMMdd", QDate::currentDate());
+                // _debug() << lib_utils::io_ops::listFiles("./", false).join("\n");
             } catch (const QString & ex) {
                 fatalExit(ex);
             }
@@ -413,11 +423,10 @@ void initParserAndLogging(const QCoreApplication & app, QCommandLineParser & par
 	parser.addVersionOption();
 	parser.addHelpOption();
     parser.addOptions({quietFlag, verboseFlag, suppressWarningsFlag});
-    parser.addPositionalArgument("command", "pscom command to execute", "<command> [<args>]");
-    parser.setApplicationDescription(QString("Available Commands:\n  %1")
-        .arg(QStringList(commands.keys()).join(", ")));
+    parser.addPositionalArgument("task", QString("One of the following:\n%1")
+        .arg(QStringList(commands.keys()).join(", ")), "<task> [<args>]");
+    parser.setApplicationDescription(QString("Welcome to %1 - your simple command line UPA.").arg(APP_NAME));
     if(app.arguments().count() <= 1) {
-        _info() << QString("Welcome to %1.").arg(APP_NAME);
         // exit with error code 1 because the user didn't supply any arguments
         parser.showHelp(1);
     }
@@ -426,7 +435,7 @@ void initParserAndLogging(const QCoreApplication & app, QCommandLineParser & par
     Logging::quiet = parser.isSet(quietFlag);
     Logging::verbose = parser.isSet(verboseFlag);
     if(Logging::quiet && Logging::verbose) {
-        abnormalExit("invalid arguments: --verbose cannot be set at the same time with --quiet");
+        abnormalExit("Invalid arguments: --verbose cannot be set at the same time with --quiet");
     }
     Logging::suppressWarnings = parser.isSet(suppressWarningsFlag);
 }
@@ -453,7 +462,7 @@ int main(int argc, char *argv[])
     
     if(parser.isSet(supportedFormatsFlag)) {
         if(Logging::quiet) {
-            abnormalExit("invalid arguments: --quiet suppresses output of --supported-formats");
+            abnormalExit("Invalid arguments: --quiet suppresses output of --supported-formats");
         }
         showSupportedFormats();
         return 0;
@@ -464,18 +473,22 @@ int main(int argc, char *argv[])
         // exit with error code 1 because the user didn't supply any arguments
         parser.showHelp(1);
     }
-    const auto commandName = args.first().toLower();
-    const auto command = commands.value(commandName, Command {
+    const auto taskName = args.first().toLower();
+    const auto command = commands.value(taskName, Command {
         [](QCommandLineParser & parser) {},
-        [&commandName](QCommandLineParser & parser) {
-            _warn() << QString("unknown command: \"%1\"").arg(commandName);
+        [&taskName](QCommandLineParser & parser) {
+            _warn() << QString("Unknown command: \"%1\"").arg(taskName);
             // exit with error code 2 for unknown command
             parser.showHelp(2);
             return 2;
-        }
+        },
+        true
     });
-    command.parameterInitializer(parser);
-	parser.process(app);
+    if(!command.unknown) {
+        _debug() << QString("Starting task \"%1\"").arg(taskName);
+        command.parameterInitializer(parser);
+	    parser.process(app);
+    }
     return command.commandHandler(parser);
     // return app.exec();
 }
