@@ -10,19 +10,19 @@
 	- [x]
 3. warn on lossy operations (replace, change, override, remove)
 	- [ ] ask user for confirmation
-	- [ ] --dry-run mode showing consequences
+	- [x] --dry-run mode showing consequences
 	- [ ] modes without confirmations --force
 
 # features
 
 0. internal file list
-	- [ ] filter time (start/end date) "--after $date" "--before $date
-	- [ ] filter file name regex "--match $name-regex"
-	- [ ] recursive
+	- [x] filter time (start/end date) "--after $date" "--before $date
+	- [x] filter file name regex "--match $name-regex"
+	- [x] recursive
 1. list all files
-	- [ ] output filenames
+	- [x] output filenames
 2. copy/move files to new directory
-	- [ ] copy
+	- [x] copy
 	- [ ] move
 	- [ ] --force
 3. rename files
