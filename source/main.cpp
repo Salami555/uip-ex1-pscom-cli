@@ -20,25 +20,65 @@
  * - prefer qDebug, qInfo, qWarning, qCritical, and qFatal for verbosity and console output.
  */
 
+bool progressBarVisible = false;
+const int progressBarWidth = 42;
+const char
+    filledProgress = '#',
+    emptyProgress = '.';
+void drawProgressBar(double progress, bool newLine = false) {
+    if(Logging::quiet)
+        return;
+    if(progress < 0) progress = 0;
+    if(progress > 1) progress = 1;
+
+    const int width = (int) (progressBarWidth * progress);
+    QTextStream(stdout) << QString("[%1] %L2%")
+        .arg(QString(filledProgress).repeated(width), -progressBarWidth, emptyProgress)
+        .arg(progress * 100, 5, 'f', 1);
+    progressBarVisible = true;
+    if(newLine) {
+        QTextStream(stdout) << '\n';
+        progressBarVisible = false;
+    }
+}
+void clearProgressBar() {
+    if(progressBarVisible) {
+        QTextStream(stdout) << "\r"
+            << QString(" ").repeated(progressBarWidth + 9) // "[" + bar{width} + "] " + number{5} + "%"
+            << "\r";
+        progressBarVisible = false;
+    }
+}
+
 QDebug _debug() {
+    clearProgressBar();
     return qDebug().noquote();
 }
 QDebug _info() {
+    clearProgressBar();
     return qInfo().noquote();
 }
 QDebug _warn() {
+    clearProgressBar();
     return qWarning().noquote();
 }
 void abnormalExit(const QString & message, int exitCode = 1) {
+    clearProgressBar();
     qCritical().noquote() << message << "\n";
     std::exit(exitCode);
 }
 void fatalExit(const QString & message, int terminationCode = -1) {
+    clearProgressBar();
     qFatal(message.toLocal8Bit().data());
     std::exit(terminationCode);
 }
 
-bool userConfirmation(const QString & message) {
+bool userConfirmation(const QString & message, bool force = false) {
+    if(force)
+        return true;
+    if(Logging::quiet)
+        fatalExit("required confirmation in quiet mode");
+    clearProgressBar();
     qCritical().noquote() << message << "[y/n] ";
     std::string input;
     std::cin >> input;
@@ -53,25 +93,25 @@ bool userConfirmation(const QString & message) {
     }
 }
 
-const int progressBarWidth = 42;
-const char
-    filledProgress = '#',
-    emptyProgress = '.';
-void drawProgressBar(double progress, bool newLine = false) {
-    if(progress < 0) progress = 0;
-    if(progress > 1) progress = 1;
-
-    const int width = (int) (progressBarWidth * progress);
-    QTextStream(stdout) << QString("[%1] %L2%")
-        .arg(QString(filledProgress).repeated(width), -progressBarWidth, emptyProgress)
-        .arg(progress * 100, 5, 'f', 1);
-    if(newLine)
-        QTextStream(stdout) << '\n';
+static int log10(int i) {
+    return (i >= 1000000000)
+        ? 9 : (i >= 100000000)
+        ? 8 : (i >= 10000000)
+        ? 7 : (i >= 1000000)
+        ? 6 : (i >= 100000)
+        ? 5 : (i >= 10000)
+        ? 4 : (i >= 1000)
+        ? 3 : (i >= 100)
+        ? 2 : (i >= 10)
+        ? 1 : 0; 
 }
-void clearProgressBar() {
-    QTextStream(stdout) << "\r"
-        << QString(" ").repeated(progressBarWidth + 9) // "[" + bar{width} + "] " + number{5} + "%"
-        << "\r";
+QString progressMessage(int pos, int total, QString operation, QString filepath) {
+    int size = log10(total); 
+    return QString("File %1/%2: %3 %4")
+        .arg(pos, size)
+        .arg(total, size)
+        .arg(operation)
+        .arg(filepath);
 }
 
 namespace lib_utils {
@@ -81,6 +121,7 @@ namespace lib_utils {
 
     namespace io_ops {
         bool recursive = false;
+        bool forceOp = false;
         bool dryRun = false;
 
         bool isPathExistingDirectory(const QString & path) {
@@ -114,35 +155,127 @@ namespace lib_utils {
             }
         }
 
-        bool moveFiles(const QStringList & filepaths, std::function<void (const QString &, bool, int, int)> fileCompletionCallback) {
-            if(filepaths.empty())
+        QDateTime fileCreationDateTime(const QString & filepath) {
+            if(!isPathExistingFile(filepath)) {
+                throw QString("File not found \"%1\"").arg(filepath);
+            }
+            return pscom::et(filepath);
+        }
+
+        bool removeFile(const QString & filepath) {
+            if(!isPathExisting(filepath)) {
                 return true;
-            
-            QStringList unsuccessful;
-            const int total = filepaths.count();
-            for(int i = 0; i < total; ++i) {
-                const QString filepath = filepaths[i];
-                const int pos = i + 1;
-                bool success = false;
-                clearProgressBar();
-                _debug() << QString("%1) Moving %2").arg(pos).arg(filepath);
-                drawProgressBar((pos-1)/total);
-                // todo move
-                clearProgressBar();
-                fileCompletionCallback(filepath, success, pos, total);
-                _info() << QString("%1) Moved %2").arg(pos).arg(filepath);
-                drawProgressBar(pos/total);
-                if(!success) {
-                    unsuccessful << filepath;
+            }
+            if(!isPathExistingFile(filepath)) {
+                _warn() << QString("Not a file to remove \"%1\"").arg(filepath);
+                return false;
+            }
+            return dryRun || pscom::rm(filepath);
+        }
+        // bool copyFile(const QString & sourceFilepath, const QString & destinationFilepath, bool force = false) {
+        //     // TODO
+        //     return dryRun || pscom::cp(sourceFilepath, destinationFilepath);
+        // }
+        bool moveFile(const QString & sourceFilepath, const QString & destinationFilepath, bool force = false) {
+            if(sourceFilepath == destinationFilepath) {
+                _debug() << QString("Equal source and destination file \"%1\"").arg(sourceFilepath);
+                return true;
+            }
+            if(!isPathExistingFile(sourceFilepath)) {
+                _warn() << QString("File not found \"%1\"").arg(sourceFilepath);
+                return false;
+            }
+            if(isPathExistingFile(destinationFilepath)) {
+                _debug() << QString("Destination file already exists \"%1\"").arg(destinationFilepath);
+                if(!userConfirmation(QString("Overwrite file \"%1\" with \"%2\"?")
+                    .arg(destinationFilepath).arg(sourceFilepath), force)) {
+                    _info() << QString("Skipped file \"%1\"").arg(destinationFilepath);
+                    return false;
+                }
+                _debug() << QString("Removing file \"%1\"").arg(destinationFilepath);
+                if(!removeFile(destinationFilepath)) {
+                    _warn() << QString("Removing file failed \"%1\"").arg(sourceFilepath);
+                    return false;
                 }
             }
-            clearProgressBar();
-            // drawProgressBar(1.0, true);
-            if(!unsuccessful.empty()) {
-                _warn() << QString("Unsuccessfully moved files: %1").arg(unsuccessful.count());
-            }
-            return unsuccessful.empty();
+            _debug() << QString("Moving file \"%1\" to \"%2\"").arg(sourceFilepath).arg(destinationFilepath);
+            return dryRun || pscom::mv(sourceFilepath, destinationFilepath);
         }
+        bool renameFile(const QString & sourceFilepath, const QString & destinationFilepath) {
+            return moveFile(sourceFilepath, destinationFilepath, true);
+        }
+
+        bool createDirectory(const QString & path) {
+            if(isPathExisting(path)) {
+                return true;
+            }
+            return dryRun || pscom::mk(path);
+        }
+        // bool moveDirectory(const QString & sourcePath, const QString & destinationPath) {
+        //     if(sourcePath == destinationPath) {
+
+        //     }
+        //     if(!isPathExistingDirectory(sourcePath)) {
+        //         throw "directory not found";
+        //     }
+        //     if(isPathExistingDirectory(destinationPath)) {
+        //         throw "destination directory already exists";
+        //     }
+        //     return dryRun || pscom::mv(sourcePath, destinationPath);
+        // }
+        // bool renameDirectory(const QString & sourcePath, const QString & destinationPath) {
+        //     return moveDirectory(sourcePath, destinationPath);
+        // }
+        
+        QStringList listFiles(const QString & path, bool recursive, const QRegExp & regex = QRegExp(".*")) {
+            if(!isPathExistingDirectory(path)) {
+                throw QString("Directory not found \"%1\"").arg(path);
+            }
+            _debug() << QString("Listing directory \"%1\"").arg(path);
+            return pscom::re(path, regex, recursive);
+        }
+        void filter(QStringList & filelist, std::function<bool (const QString &)> filter) {
+            QMutableStringListIterator i(filelist);
+            while(i.hasNext()) {
+                if(!filter(i.next())) {
+                    i.remove();
+                }
+            }
+        }
+        void filterMinDateFileList(QStringList & filelist, const QDateTime & minDateTime) {
+            filter(filelist, [&](const QString & file) {
+                return minDateTime < fileCreationDateTime(file);
+            });
+        }
+        void filterMaxDateFileList(QStringList & filelist, const QDateTime & maxDateTime) {
+            filter(filelist, [&](const QString & file) {
+                return fileCreationDateTime(file) < maxDateTime;
+            });
+        }
+
+        // QStringList moveFiles(const QStringList & filepaths, std::function<void (const QString &, bool, int, int)> fileCompletionCallback) {
+        //     if(filepaths.empty())
+        //         return QStringList();
+            
+        //     QStringList unsuccessful;
+        //     const int total = filepaths.count();
+        //     for(int i = 0; i < total; ++i) {
+        //         const QString filepath = filepaths[i];
+        //         const int pos = i + 1;
+        //         _debug() << progressMessage(pos, total, "Moving", filepath);
+        //         drawProgressBar((pos-1)/total);
+        //         bool success = false;
+        //         // todo move
+        //         fileCompletionCallback(filepath, success, pos, total);
+        //         _info() << progressMessage(pos, total, "Moving", filepath);
+        //         drawProgressBar(pos/total);
+        //         if(!success) {
+        //             unsuccessful << filepath;
+        //         }
+        //     }
+        //     clearProgressBar();
+        //     return unsuccessful;
+        // }
     }
 }
 
@@ -160,6 +293,11 @@ static const QMap<QString, Command> commands({
         },
         [](QCommandLineParser & parser) {
             _debug() << "list";
+            try {
+                _debug() << lib_utils::io_ops::listFiles("", false).join("\n");
+            } catch (const QString & ex) {
+                fatalExit(ex);
+            }
             return 0;
         }
     }),
@@ -169,9 +307,13 @@ static const QMap<QString, Command> commands({
         },
         [](QCommandLineParser & parser) {
             _debug() << "copy";
-            // lib_utils::io_ops::moveFiles({"./a.txt"}, [](const QString & filepath, bool success, int i, int total) {
+            _debug() << (lib_utils::io_ops::moveFile("test2.txt", "test.txt") ? "success" : "failure");
+            // auto unsuccessful = lib_utils::io_ops::moveFiles({"test - Kopie.txt"}, [](const QString & filepath, bool success, int i, int total) {
             //     _debug() << filepath << success << i << total;
             // });
+            // if(!unsuccessful.empty()) {
+            //     _warn() << QString("Unsuccessfully moved files: %1").arg(unsuccessful.count());
+            // }
             return 0;
         }
     }),
