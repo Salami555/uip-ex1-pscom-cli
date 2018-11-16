@@ -29,8 +29,8 @@
 	- [x] default upa
 	- [x] own date-time-format "--format $format"
 4. group files
-	- [ ] upa "--group upa"
-	- [ ] place-event directories "--group places-events"
+	- [x] upa "--group upa"
+	- [x] place-event directories "--group places-events"
 6. skrink files for email
 	- [ ] downscale "--shrink"
 7. reformat (format/quality) files
