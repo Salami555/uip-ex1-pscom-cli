@@ -125,6 +125,7 @@ namespace IOSettings {
     bool recursive = false;
     bool skipExisting = false;
     bool forceOverwrite = false;
+    bool createMissingFolders = false;
     bool dryRun = false;
     bool progressBar = false;
 }
@@ -145,32 +146,37 @@ namespace lib_utils {
             return !pscom::ne(path);
         }
         bool arePathsEqual(const QString & path1, const QString & path2) {
-            return QString(path1).replace("\\", "/") == QString(path2).replace("\\", "/");
+            return QString(path1).replace('\\', '/') == QString(path2).replace('\\', '/');
         }
 
         namespace filepath_ops {
-            QString fileExtension(const QString & filepath) {
+            const QString fileExtension(const QString & filepath) {
                 if(!isPathExistingFile(filepath)) {
                     throw QString("File not found \"%1\"").arg(filepath);
                 }
                 return pscom::fs(filepath);
             }
-            QString fileName(const QString & filepath) {
+            const QString fileName(const QString & filepath) {
                 // missing this in the library
                 const auto fi = QFileInfo(filepath);
                 return fi.completeBaseName() + '.' + fi.suffix();
             }
-            QString pathSetFileExtension(const QString & filepath, const QString & extension) {
+            const QString directoryPath(const QString & filepath) {
+                // missing this in the library
+                const auto fi = QFileInfo(filepath);
+                return fi.path() + QDir::separator();
+            }
+            const QString pathSetFileExtension(const QString & filepath, const QString & extension) {
                 if(!supportedFormats().contains(extension)) {
                     throw QString("Unsupported file format \"%1\"").arg(filepath);
                 }
                 return pscom::cs(filepath, extension);
             }
-            QString pathSetDatedFileBaseName(const QString & filepath, const QString & dateTimeFormat, const QDateTime & dateTime) {
+            const QString pathSetDatedFileBaseName(const QString & filepath, const QString & dateTimeFormat, const QDateTime & dateTime) {
                 // buggy with multiple points in filename
                 return pscom::fn(filepath, dateTime, dateTimeFormat);
             }
-            QString pathInsertDatedDirectory(const QString & filepath, const QString & dateFormat, const QDate & date) {
+            const QString pathInsertDatedDirectory(const QString & filepath, const QString & dateFormat, const QDate & date) {
                 return pscom::fp(filepath, date, dateFormat);
             }
         }
@@ -241,7 +247,7 @@ namespace lib_utils {
             return safeFileOperation("Moving", pscom::mv, sourceFilepath, targetFilepath, force, userConfirm);
         }
         bool renameFile(const QString & sourceFilepath, const QString & targetFilepath, bool force = false, bool userConfirm = true) {
-            return safeFileOperation("Rename", pscom::mv, sourceFilepath, targetFilepath, force, userConfirm);
+            return safeFileOperation("Renaming", pscom::mv, sourceFilepath, targetFilepath, force, userConfirm);
         }
 
         bool createDirectories(const QString & path) {
@@ -390,9 +396,10 @@ static const QCommandLineOption fileOPsCreateDirectoriesFlag({"mkdirs", "create-
 static const QCommandLineOption fileOPsDryRunFlag({"dry-run", "noop"}, "Simulate every file operation without actually doing it.");
 
 // task flags
-static const QCommandLineOption renameFormatOption("scheme", "Date time format for renaming the images. Default is UPA scheme: yyyyMMdd_HHmmsszzz", "datetime-format", "yyyyMMdd_HHmmsszzz");
-static const QCommandLineOption groupLocationOption("location", "Location name for folder grouping.", "location");
-static const QCommandLineOption groupEventOption("event", "Event name for folder grouping.", "event");
+static const QCommandLineOption renameSchemeOption("scheme", "Date time format for renaming the images. Default is UPA scheme: yyyyMMdd_HHmmsszzz", "datetime-format", "yyyyMMdd_HHmmsszzz");
+static const QCommandLineOption groupSchemeOption("scheme", "Date format for renaming the folders. Default is UPA scheme with %1 being a possible \" location - event\" definition: yyyy/yyyy-MM%1", "date-format", "yyyy/yyyy-MM%1");
+static const QCommandLineOption groupLocationOption({"location", "city"}, "Location name for folder grouping.", "location");
+static const QCommandLineOption groupEventOption({"event", "activity"}, "Event name for folder grouping.", "event");
 static const QCommandLineOption transformCopySuffixOption("suffix", "Keeps the original image and works on a renamed copy with suffixed file base name. Default: _new", "suffix", "_new");
 static const QCommandLineOption transformShrinkWidthOption({"w", "width"}, "New image width in px.", "width");
 static const QCommandLineOption transformShrinkHeightOption({"h", "height"}, "New image height in px.", "height");
@@ -439,20 +446,28 @@ void parseFileListingSettings(const QCommandLineParser & parser) {
     }
 }
 void registerIOSettings(QCommandLineParser & parser) {
+    registerFileListingSettings(parser);
     parser.addOptions({progressBarFlag, fileOPsDryRunFlag, fileOPsForceOverwriteFlag, fileOPsSkipExistingFlag});
 }
 void parseIOSettings(const QCommandLineParser & parser) {
+    parseFileListingSettings(parser);
     using namespace IOSettings;
     progressBar = parser.isSet(progressBarFlag);
     dryRun = parser.isSet(fileOPsDryRunFlag);
+    if(dryRun) {
+        _debug() << "~~~ DRY RUN ~~~";
+    }
     forceOverwrite = parser.isSet(fileOPsForceOverwriteFlag);
     skipExisting = parser.isSet(fileOPsSkipExistingFlag);
 }
-void registerTargetSetting(QCommandLineParser & parser) {
+void registerTargetIOSettings(QCommandLineParser & parser) {
+    registerIOSettings(parser);
     parser.addOptions({targetDirectoryOption, fileOPsCreateDirectoriesFlag});
 }
-void parseTargetSetting(const QCommandLineParser & parser) {
+void parseTargetIOSettings(const QCommandLineParser & parser) {
+    parseIOSettings(parser);
     using namespace IOSettings;
+    createMissingFolders = parser.isSet(fileOPsCreateDirectoriesFlag);
     if(parser.isSet(targetDirectoryOption)) {
         targetDirectory = parser.value(targetDirectoryOption);
         // QDir::separator() behaves strange...
@@ -461,7 +476,7 @@ void parseTargetSetting(const QCommandLineParser & parser) {
         }
         using namespace lib_utils::io_ops;
         if(!isPathExisting(targetDirectory)) {
-            if(!parser.isSet(fileOPsCreateDirectoriesFlag)) {
+            if(!createMissingFolders) {
                 // todo add user confirmation
                 abnormalExit(QString("Target directory does not exist \"%1\"").arg(targetDirectory), 4);
             }
@@ -503,8 +518,12 @@ void fileBatcherWithRetry(
         },
         true
     );
-    _info() << QString("%1 completed (%2 file(s) renamed)!").arg(opName)
-        .arg(total - finalProblems.count());
+    _info() << QString("%1 completed (%2 file(s) renamed / %3 failed)!").arg(opName)
+        .arg(total - finalProblems.count()).arg(finalProblems.count());
+}
+
+const QString clearDateFormattingTemplate(QString input) {
+    return input.replace('\'', "''").replace('\\', '_').replace('/', '_');
 }
 
 static const QMap<QString, Task> tasks({
@@ -528,14 +547,10 @@ static const QMap<QString, Task> tasks({
         [](QCommandLineParser & parser) {
             parser.clearPositionalArguments();
             parser.addPositionalArgument("copy", "Copy all (filtered) images found in the source directories to the target directory.", "copy [file-options]");
-            registerFileListingSettings(parser);
-            registerIOSettings(parser);
-            registerTargetSetting(parser);
+            registerTargetIOSettings(parser);
         },
         [](QCommandLineParser & parser) {
-            parseFileListingSettings(parser);
-            parseIOSettings(parser);
-            parseTargetSetting(parser);
+            parseTargetIOSettings(parser);
             using namespace lib_utils::io_ops;
             using namespace IOSettings;
             _info() << QString("Copying files to \"%1\"").arg(targetDirectory);
@@ -552,14 +567,10 @@ static const QMap<QString, Task> tasks({
         [](QCommandLineParser & parser) {
             parser.clearPositionalArguments();
             parser.addPositionalArgument("move", "Move all (filtered) images found in the source directories to the target directory.", "move [file-options]");
-            registerFileListingSettings(parser);
-            registerIOSettings(parser);
-            registerTargetSetting(parser);
+            registerTargetIOSettings(parser);
         },
         [](QCommandLineParser & parser) {
-            parseFileListingSettings(parser);
-            parseIOSettings(parser);
-            parseTargetSetting(parser);
+            parseTargetIOSettings(parser);
             using namespace lib_utils::io_ops;
             using namespace IOSettings;
             _info() << QString("Moving files to \"%1\"").arg(targetDirectory);
@@ -575,15 +586,13 @@ static const QMap<QString, Task> tasks({
     std::make_pair("rename", Task {
         [](QCommandLineParser & parser) {
             parser.clearPositionalArguments();
-            parser.addPositionalArgument("rename", "Rename all (filtered) images found in the source directories to upa filename scheme.", "move [move-options]");
-            registerFileListingSettings(parser);
+            parser.addPositionalArgument("rename", "Rename all (filtered) images found in the source directories to upa filename scheme.", "rename [rename-options]");
             registerIOSettings(parser);
-            parser.addOption(renameFormatOption);
+            parser.addOption(renameSchemeOption);
         },
         [](QCommandLineParser & parser) {
-            parseFileListingSettings(parser);
             parseIOSettings(parser);
-            const QString schemeFormat = parser.value(renameFormatOption);
+            const QString schemeFormat = parser.value(renameSchemeOption);
             using namespace lib_utils::io_ops;
             fileBatcherWithRetry("Renaming",
                 [&](const QString & filepath) {
@@ -596,16 +605,41 @@ static const QMap<QString, Task> tasks({
     }),
     std::make_pair("group", Task {
         [](QCommandLineParser & parser) {
-            _debug() << "init group";
+            parser.clearPositionalArguments();
+            parser.addPositionalArgument("group", "Group all (filtered) images found in the source directories into newly created folders following the upa scheme.", "group [group-options]");
+            registerTargetIOSettings(parser);
+            parser.addOptions({groupSchemeOption, groupLocationOption, groupEventOption});
         },
         [](QCommandLineParser & parser) {
-            _debug() << "group";
-            // try {
-            //     _debug() << lib_utils::io_ops::filepath_ops::pathSetDatedFileBaseName("./", "yyyyMMdd_HHmmsszzz", QDateTime::currentDateTime());
-            //     _debug() << lib_utils::io_ops::filepath_ops::pathInsertDatedDirectory("./", "yyyyMMdd", QDate::currentDate());
-            // } catch (const QString & ex) {
-            //     fatalExit(ex);
-            // }
+            parseTargetIOSettings(parser);
+            QStringList detailList;
+            const QString schemeFormat = parser.value(groupSchemeOption);
+            if(parser.isSet(groupLocationOption))
+                detailList << clearDateFormattingTemplate(parser.values(groupLocationOption).join(", "));
+            if(parser.isSet(groupEventOption))
+                detailList << clearDateFormattingTemplate(parser.values(groupEventOption).join(", "));
+            const QString groupDescription = detailList.empty() ? "" : QString("' %1'").arg(detailList.join(" - "));
+            const QString datetimeFormat = schemeFormat.arg(groupDescription);
+            using namespace lib_utils::io_ops;
+            using namespace IOSettings;
+            fileBatcherWithRetry("Grouping",
+                [&](const QString & filepath) {
+                    return filepath_ops::pathInsertDatedDirectory(
+                        targetDirectory, datetimeFormat,
+                        fileCreationDateTime(filepath).date()
+                    ) + filepath_ops::fileName(filepath);
+                },
+                [](const QString & sourceFilepath, const QString & targetFilepath, bool force, bool userConfirm) {
+                    const auto path = filepath_ops::directoryPath(targetFilepath);
+                    if(!isPathExistingDirectory(path)) {
+                        if(!createDirectories(path)) {
+                            return false;
+                        }
+                        _debug() << QString("Created group directory \"%1\"").arg(path);
+                    }
+                    return moveFile(sourceFilepath, targetFilepath, force, userConfirm);
+                }
+            );
             return 0;
         }
     }),
