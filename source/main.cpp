@@ -180,6 +180,10 @@ namespace lib_utils {
                 return pscom::fp(filepath, date, dateFormat);
             }
         }
+        
+        const bool isSupportedFile(const QString & filepath) {
+            return supportedFormats().contains(filepath_ops::fileExtension(filepath));
+        }
 
         QDateTime fileCreationDateTime(const QString & filepath) {
             if(!isPathExistingFile(filepath)) {
@@ -256,15 +260,6 @@ namespace lib_utils {
             }
             return IOSettings::dryRun || pscom::mk(path);
         }
-        // bool moveDirectory(const QString & sourcePath, const QString & targetPath) {
-        //     if(!isPathExistingDirectory(sourcePath)) {
-        //         throw "Directory not found";
-        //     }
-        //     if(isPathExistingDirectory(targetPath)) {
-        //         throw "Target directory already exists";
-        //     }
-        //     return dryRun || pscom::mv(sourcePath, targetPath);
-        // }
         
         void filter(QStringList & fileList, std::function<bool (const QString &)> filter) {
             QMutableStringListIterator i(fileList);
@@ -346,6 +341,44 @@ namespace lib_utils {
             return unsuccessful;
         }
     }
+
+    namespace image_transformations {
+        bool safeTransformationOp(const QString & filepath, std::function<bool (const QString &)> op) {
+            if(!io_ops::isPathExistingFile(filepath)) {
+                _warn() << QString("File not found \"%1\"").arg(filepath);
+                return false;
+            }
+            if(!io_ops::isSupportedFile(filepath)) {
+                _warn() << QString("Format not supported \"%1\"").arg(filepath);
+                return false;
+            }
+            return IOSettings::dryRun || op(filepath);
+        }
+        bool scaleToWidth(const QString & filepath, int width) {
+            _debug() << QString("Scaling image to width %1 \"%2\"").arg(width).arg(filepath);
+            return safeTransformationOp(filepath, [&](const QString & filepath) {
+                return pscom::sw(filepath, width);
+            });
+        }
+        bool scaleToHeight(const QString & filepath, int height) {
+            _debug() << QString("Scaling image to height %1 \"%2\"").arg(height).arg(filepath);
+            return safeTransformationOp(filepath, [&](const QString & filepath) {
+                return pscom::sh(filepath, height);
+            });
+        }
+        bool scaleToSize(const QString & filepath, int width, int height) {
+            _debug() << QString("Scaling image to size %1@%2 \"%2\"").arg(width).arg(height).arg(filepath);
+            return safeTransformationOp(filepath, [&](const QString & filepath) {
+                return pscom::ss(filepath, width, height);
+            });
+        }
+        bool reformat(const QString & filepath, const QString & format, int quality) {
+            _debug() << QString("Formatting image using %1 with quality %2 \"%2\"").arg(format).arg(quality).arg(filepath);
+            return safeTransformationOp(filepath, [&](const QString & filepath) {
+                return pscom::cf(filepath, format, quality);
+            });
+        }
+    }
 }
 
 struct Task {
@@ -401,8 +434,8 @@ static const QCommandLineOption groupSchemeOption("scheme", "Date format for ren
 static const QCommandLineOption groupLocationOption({"location", "city"}, "Location name for folder grouping.", "location");
 static const QCommandLineOption groupEventOption({"event", "activity"}, "Event name for folder grouping.", "event");
 static const QCommandLineOption transformCopySuffixOption("suffix", "Keeps the original image and works on a renamed copy with suffixed file base name. Default: _new", "suffix", "_new");
-static const QCommandLineOption transformShrinkWidthOption({"w", "width"}, "New image width in px.", "width");
-static const QCommandLineOption transformShrinkHeightOption({"h", "height"}, "New image height in px.", "height");
+static const QCommandLineOption transformShrinkWidthOption("width", "New image width in px.", "width");
+static const QCommandLineOption transformShrinkHeightOption("height", "New image height in px.", "height");
 static const QCommandLineOption transformFormatOption("format", "New image format (check supported formats with --supported-formats).", "format");
 static const QCommandLineOption transformQualityOption("quality", "New image quality between 0 and 100. Default: 70", "quality", "70");
 
@@ -645,10 +678,18 @@ static const QMap<QString, Task> tasks({
     }),
     std::make_pair("transform", Task {
         [](QCommandLineParser & parser) {
-            _debug() << "init format";
+            parser.clearPositionalArguments();
+            parser.addPositionalArgument("transform", "Transform all (filtered) images found in the source directories with the given filters.", "transform [transform-options]");
+            registerIOSettings(parser);
+            parser.addOptions({
+                transformCopySuffixOption,
+                transformShrinkWidthOption, transformShrinkHeightOption,
+                transformFormatOption, transformQualityOption
+            });
         },
         [](QCommandLineParser & parser) {
-            _debug() << "format";
+            QString fileNameSuffix = parser.value(transformCopySuffixOption);
+            abnormalExit("TODO - WIP", -999); // todo
             return 0;
         }
     })
@@ -720,9 +761,9 @@ int main(int argc, char *argv[])
         true
     });
     if(!task.unknown) {
-        _debug() << QString("Starting task \"%1\"").arg(taskName);
         task.parameterInitializer(parser);
 	    parser.process(app);
+        _debug() << QString("Starting task \"%1\"").arg(taskName);
     }
     return task.taskHandler(parser);
     // return app.exec();
