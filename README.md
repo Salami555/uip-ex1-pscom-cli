@@ -23,11 +23,11 @@
 	- [x] output filenames
 2. copy/move files to new directory
 	- [x] copy
-	- [ ] move
-	- [ ] --force
+	- [x] move
+	- [x] --force
 3. rename files
-	- [ ] default upa
-	- [ ] own date-time-format "--format $format"
+	- [x] default upa
+	- [x] own date-time-format "--format $format"
 4. group files
 	- [ ] upa "--group upa"
 	- [ ] place-event directories "--group places-events"
@@ -36,3 +36,6 @@
 7. reformat (format/quality) files
 	- [ ] format "--format $format"
 	- [ ] quality "--quality $quality"
+
+Idea
+	- file ops return struct{did-something, success}
