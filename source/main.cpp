@@ -11,6 +11,8 @@
 #include <QVersionNumber>
 #include <iostream>
 
+#include <QThread>
+
 #include "verbosity.h"
 
 
@@ -22,34 +24,33 @@
  * - prefer qDebug, qInfo, qWarning, qCritical, and qFatal for verbosity and console output.
  */
 
-QTextStream _stdout(stdout, QIODevice::WriteOnly | QIODevice::Unbuffered);
-
 bool progressBarVisible = false;
 const int progressBarWidth = 42;
 const char
     filledProgress = '#',
     emptyProgress = '.';
+void clearProgressBar() {
+    if(progressBarVisible) {
+        QTextStream(stdout) << "\r"
+            << QString(" ").repeated(progressBarWidth + 9) // "[" + bar{width} + "] " + number{5} + "%"
+            << "\r";
+        progressBarVisible = false;
+    }
+}
 void drawProgressBar(double progress, bool newLine = false) {
     if(Logging::quiet)
         return;
+    clearProgressBar();
     if(progress < 0) progress = 0;
     if(progress > 1) progress = 1;
 
     const int width = (int) (progressBarWidth * progress);
-    _stdout << QString("[%1] %L2%")
+    QTextStream(stdout) << QString("[%1] %L2%")
         .arg(QString(filledProgress).repeated(width), -progressBarWidth, emptyProgress)
         .arg(progress * 100, 5, 'f', 1);
     progressBarVisible = true;
     if(newLine) {
-        _stdout << '\n';
-        progressBarVisible = false;
-    }
-}
-void clearProgressBar() {
-    if(progressBarVisible) {
-        _stdout << "\r"
-            << QString(" ").repeated(progressBarWidth + 9) // "[" + bar{width} + "] " + number{5} + "%"
-            << "\r";
+        QTextStream(stdout) << '\n';
         progressBarVisible = false;
     }
 }
@@ -108,7 +109,7 @@ static int log10(int i) {
         ? 1 : 0; 
 }
 QString progressMessage(int pos, int total, const QString & operation) {
-    int size = log10(total); 
+    int size = log10(total) + 1; 
     return QString("[%1/%2]: %3")
         .arg(pos, size)
         .arg(total, size)
@@ -143,6 +144,9 @@ namespace lib_utils {
         bool isPathExisting(const QString & path) {
             return !pscom::ne(path);
         }
+        bool arePathsEqual(const QString & path1, const QString & path2) {
+            return QString(path1).replace("\\", "/") == QString(path2).replace("\\", "/");
+        }
 
         namespace filepath_ops {
             QString fileExtension(const QString & filepath) {
@@ -163,6 +167,7 @@ namespace lib_utils {
                 return pscom::cs(filepath, extension);
             }
             QString pathSetDatedFileBaseName(const QString & filepath, const QString & dateTimeFormat, const QDateTime & dateTime) {
+                // buggy with multiple points in filename
                 return pscom::fn(filepath, dateTime, dateTimeFormat);
             }
             QString pathInsertDatedDirectory(const QString & filepath, const QString & dateFormat, const QDate & date) {
@@ -204,8 +209,14 @@ namespace lib_utils {
             }
             return true;
         }
-        bool copyFile(const QString & sourceFilepath, const QString & targetFilepath, bool force = false, bool userConfirm = true) {
-            if(sourceFilepath == targetFilepath) {
+        bool saveFileOperation(
+            const QString & actionName,
+            std::function<bool (const QString &, const QString &)> unsaveFileOp,
+            const QString & sourceFilepath,
+            const QString & targetFilepath,
+            bool force = false, bool userConfirm = true
+        ) {
+            if(arePathsEqual(sourceFilepath, targetFilepath)) {
                 _debug() << QString("Equal source and target file \"%1\"").arg(sourceFilepath);
                 return true;
             }
@@ -216,34 +227,21 @@ namespace lib_utils {
             if(isPathExistingFile(targetFilepath)) {
                 if(!isFileOverwritePermitted(targetFilepath, QString("Overwrite file \"%1\" with \"%2\"?")
                     .arg(targetFilepath).arg(sourceFilepath), force, userConfirm)) {
-                    _warn() << QString("Copying file failed caused by existing target \"%1\"").arg(targetFilepath);
+                    _warn() << QString("%1 file failed - target file already exists \"%2\"").arg(actionName).arg(targetFilepath);
                     return false;
                 }
             }
-            _debug() << QString("Copying file \"%1\" to \"%2\"").arg(sourceFilepath).arg(targetFilepath);
-            return IOSettings::dryRun || pscom::cp(sourceFilepath, targetFilepath);
+            _debug() << QString("%1 file \"%2\" to \"%3\"").arg(actionName).arg(sourceFilepath).arg(targetFilepath);
+            return IOSettings::dryRun || unsaveFileOp(sourceFilepath, targetFilepath);
+        }
+        bool copyFile(const QString & sourceFilepath, const QString & targetFilepath, bool force = false, bool userConfirm = true) {
+            return saveFileOperation("Copying", pscom::cp, sourceFilepath, targetFilepath, force, userConfirm);
         }
         bool moveFile(const QString & sourceFilepath, const QString & targetFilepath, bool force = false, bool userConfirm = true) {
-            QString sfp = QString(sourceFilepath).replace("\\", QDir::separator()),
-                    tfp = QString(targetFilepath).replace("\\", QDir::separator());
-            // todo fix 
-            if(sfp == tfp) {
-                _debug() << QString("Equal source and target file \"%1\"").arg(sourceFilepath);
-                return true;
-            }
-            if(!isPathExistingFile(sourceFilepath)) {
-                _warn() << QString("File not found \"%1\"").arg(sourceFilepath);
-                return false;
-            }
-            if(isPathExistingFile(targetFilepath)) {
-                if(!isFileOverwritePermitted(targetFilepath, QString("Overwrite file \"%1\" with \"%2\"?")
-                    .arg(targetFilepath).arg(sourceFilepath), force, userConfirm)) {
-                    _warn() << QString("Moving file failed caused by existing target \"%1\"").arg(targetFilepath);
-                    return false;
-                }
-            }
-            _debug() << QString("Moving file \"%1\" to \"%2\"").arg(sourceFilepath).arg(targetFilepath);
-            return IOSettings::dryRun || pscom::mv(sourceFilepath, targetFilepath);
+            return saveFileOperation("Moving", pscom::mv, sourceFilepath, targetFilepath, force, userConfirm);
+        }
+        bool renameFile(const QString & sourceFilepath, const QString & targetFilepath, bool force = false, bool userConfirm = true) {
+            return saveFileOperation("Rename", pscom::mv, sourceFilepath, targetFilepath, force, userConfirm);
         }
 
         bool createDirectories(const QString & path) {
@@ -335,15 +333,16 @@ namespace lib_utils {
                 const int pos = i + 1;
                 if(!silent)
                     _info() << progressMessage(pos, total, operationMessage(filepath));
-                // if(IOSettings::progressBar) drawProgressBar((pos-1)/total);
+                if(IOSettings::progressBar) drawProgressBar((pos-1)*1.0/total);
+                QThread::msleep(200);
                 bool success = operation(filepath);
                 _debug() << progressMessage(pos, total, QString("Finished %1").arg(operationMessage(filepath)));
-                // if(IOSettings::progressBar) drawProgressBar(pos/total);
+                if(IOSettings::progressBar) drawProgressBar(pos*1.0/total);
                 if(!success) {
                     unsuccessful << filepath;
                 }
             }
-            // clearProgressBar();
+            clearProgressBar();
             return unsuccessful;
         }
     }
@@ -462,7 +461,8 @@ void parseTargetSetting(const QCommandLineParser & parser) {
     using namespace IOSettings;
     if(parser.isSet(targetDirectoryOption)) {
         targetDirectory = parser.value(targetDirectoryOption);
-        if(!targetDirectory.endsWith(QDir::separator())) {
+        // QDir::separator() behaves strange...
+        if(!targetDirectory.endsWith("/") && !targetDirectory.endsWith("\\")) {
             targetDirectory.append(QDir::separator());
         }
         using namespace lib_utils::io_ops;
@@ -478,6 +478,39 @@ void parseTargetSetting(const QCommandLineParser & parser) {
             }
         }
     }
+}
+
+void fileBatcherWithRetry(
+    const QString & opName,
+    std::function<const QString(const QString &)> targetPathSupplier,
+    std::function<bool (const QString &, const QString &, bool, bool)> fileOp
+) {
+    using namespace lib_utils::io_ops;
+    using namespace IOSettings;
+    auto fileList = listFiles();
+    const int total = fileList.count();
+    auto problemFileList = multiFileOperation(fileList,
+        [&](const QString & filepath) {
+            return QString("%1 %2").arg(opName).arg(filepath);
+        },
+        [&](const QString & filepath) {
+            return fileOp(filepath, targetPathSupplier(filepath), forceOverwrite, false);
+        }
+    );
+    if(!problemFileList.empty()) {
+        _info() << QString("Found %1 file(s) with problems").arg(problemFileList.count());
+    }
+    auto finalProblems = multiFileOperation(problemFileList,
+        [&](const QString & filepath) {
+            return QString("Retry %1 %2").arg(opName.toLower()).arg(filepath);
+        },
+        [&](const QString & filepath) {
+            return fileOp(filepath, targetPathSupplier(filepath), false, true);
+        },
+        true
+    );
+    _info() << QString("%1 completed (%2 file(s) renamed)!").arg(opName)
+        .arg(total - finalProblems.count());
 }
 
 static const QMap<QString, Task> tasks({
@@ -517,32 +550,13 @@ static const QMap<QString, Task> tasks({
             parseTargetSetting(parser);
             using namespace lib_utils::io_ops;
             using namespace IOSettings;
-            auto fileList = listFiles();
-            const int total = fileList.count();
-            auto problemFileList = multiFileOperation(fileList,
-                [](const QString & filepath) {
-                    return QString("Copying %1").arg(filepath);
+            _info() << QString("Copying files to \"%1\"").arg(targetDirectory);
+            fileBatcherWithRetry("Copying",
+                [&](const QString & filepath) {
+                    return targetDirectory + filepath_ops::fileName(filepath);
                 },
-                [](const QString & filepath) {
-                    const auto targetpath = targetDirectory + filepath_ops::fileName(filepath);
-                    return copyFile(filepath, targetpath, forceOverwrite, false);
-                }
+                copyFile
             );
-            if(!problemFileList.empty()) {
-                _info() << QString("Found %1 file(s) with problems").arg(problemFileList.count());
-            }
-            auto finalProblems = multiFileOperation(problemFileList,
-                [](const QString & filepath) {
-                    return QString("Retry copying %1").arg(filepath);
-                },
-                [](const QString & filepath) {
-                    const auto targetpath = targetDirectory + filepath_ops::fileName(filepath);
-                    return copyFile(filepath, targetpath, false, true);
-                },
-                true
-            );
-            _info() << QString("Copying completed (%1 file(s) copied)!")
-                .arg(total - finalProblems.count());
             return 0;
         }
     }),
@@ -560,32 +574,13 @@ static const QMap<QString, Task> tasks({
             parseTargetSetting(parser);
             using namespace lib_utils::io_ops;
             using namespace IOSettings;
-            auto fileList = listFiles();
-            const int total = fileList.count();
-            auto problemFileList = multiFileOperation(fileList,
-                [](const QString & filepath) {
-                    return QString("Moving %1").arg(filepath);
+            _info() << QString("Moving files to \"%1\"").arg(targetDirectory);
+            fileBatcherWithRetry("Moving",
+                [&](const QString & filepath) {
+                    return targetDirectory + filepath_ops::fileName(filepath);
                 },
-                [](const QString & filepath) {
-                    const auto targetpath = targetDirectory + filepath_ops::fileName(filepath);
-                    return moveFile(filepath, targetpath, forceOverwrite, false);
-                }
+                moveFile
             );
-            if(!problemFileList.empty()) {
-                _info() << QString("Found %1 file(s) with problems").arg(problemFileList.count());
-            }
-            auto finalProblems = multiFileOperation(problemFileList,
-                [](const QString & filepath) {
-                    return QString("Retry moving %1").arg(filepath);
-                },
-                [](const QString & filepath) {
-                    const auto targetpath = targetDirectory + filepath_ops::fileName(filepath);
-                    return moveFile(filepath, targetpath, false, true);
-                },
-                true
-            );
-            _info() << QString("Moving completed (%1 file(s) moved)!")
-                .arg(total - finalProblems.count());
             return 0;
         }
     }),
@@ -602,33 +597,12 @@ static const QMap<QString, Task> tasks({
             parseIOSettings(parser);
             const QString schemeFormat = parser.value(renameFormatOption);
             using namespace lib_utils::io_ops;
-            using namespace IOSettings;
-            auto fileList = listFiles();
-            const int total = fileList.count();
-            auto problemFileList = multiFileOperation(fileList,
-                [](const QString & filepath) {
-                    return QString("Moving %1").arg(filepath);
-                },
+            fileBatcherWithRetry("Renaming",
                 [&](const QString & filepath) {
-                    const QString targetpath = filepath_ops::pathSetDatedFileBaseName(filepath, schemeFormat, fileCreationDateTime(filepath));
-                    return moveFile(filepath, targetpath, forceOverwrite, false);
-                }
-            );
-            if(!problemFileList.empty()) {
-                _info() << QString("Found %1 file(s) with problems").arg(problemFileList.count());
-            }
-            auto finalProblems = multiFileOperation(problemFileList,
-                [](const QString & filepath) {
-                    return QString("Retry moving %1").arg(filepath);
+                    return filepath_ops::pathSetDatedFileBaseName(filepath, schemeFormat, fileCreationDateTime(filepath));
                 },
-                [&](const QString & filepath) {
-                    const QString targetpath = filepath_ops::pathSetDatedFileBaseName(filepath, schemeFormat, fileCreationDateTime(filepath));
-                    return moveFile(filepath, targetpath, false, true);
-                },
-                true
+                renameFile
             );
-            _info() << QString("Moving completed (%1 file(s) moved)!")
-                .arg(total - finalProblems.count());
             return 0;
         }
     }),
