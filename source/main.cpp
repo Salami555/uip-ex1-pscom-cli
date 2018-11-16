@@ -151,7 +151,7 @@ namespace lib_utils {
         namespace filepath_ops {
             QString fileExtension(const QString & filepath) {
                 if(!isPathExistingFile(filepath)) {
-                    throw "file not found";
+                    throw QString("File not found \"%1\"").arg(filepath);
                 }
                 return pscom::fs(filepath);
             }
@@ -162,7 +162,7 @@ namespace lib_utils {
             }
             QString pathSetFileExtension(const QString & filepath, const QString & extension) {
                 if(!supportedFormats().contains(extension)) {
-                    throw "unsupported file format";
+                    throw QString("Unsupported file format \"%1\"").arg(filepath);
                 }
                 return pscom::cs(filepath, extension);
             }
@@ -209,7 +209,7 @@ namespace lib_utils {
             }
             return true;
         }
-        bool saveFileOperation(
+        bool safeFileOperation(
             const QString & actionName,
             std::function<bool (const QString &, const QString &)> unsaveFileOp,
             const QString & sourceFilepath,
@@ -251,9 +251,6 @@ namespace lib_utils {
             return IOSettings::dryRun || pscom::mk(path);
         }
         // bool moveDirectory(const QString & sourcePath, const QString & targetPath) {
-        //     if(sourcePath == targetPath) {
-
-        //     }
         //     if(!isPathExistingDirectory(sourcePath)) {
         //         throw "Directory not found";
         //     }
@@ -261,9 +258,6 @@ namespace lib_utils {
         //         throw "Target directory already exists";
         //     }
         //     return dryRun || pscom::mv(sourcePath, targetPath);
-        // }
-        // bool renameDirectory(const QString & sourcePath, const QString & targetPath) {
-        //     return moveDirectory(sourcePath, targetPath);
         // }
         
         void filter(QStringList & fileList, std::function<bool (const QString &)> filter) {
@@ -527,12 +521,6 @@ static const QMap<QString, Task> tasks({
             for(int i = 0; i < total; ++i) {
                 _info() << progressMessage(i+1, total, fileList[i]);
             }
-            // try {
-            //     _debug() << lib_utils::io_ops::filepath_ops::pathSetDatedFileBaseName("./", "yyyyMMdd_HHmmsszzz", QDateTime::currentDateTime());
-            //     _debug() << lib_utils::io_ops::filepath_ops::pathInsertDatedDirectory("./", "yyyyMMdd", QDate::currentDate());
-            // } catch (const QString & ex) {
-            //     fatalExit(ex);
-            // }
             return 0;
         }
     }),
@@ -612,6 +600,12 @@ static const QMap<QString, Task> tasks({
         },
         [](QCommandLineParser & parser) {
             _debug() << "group";
+            // try {
+            //     _debug() << lib_utils::io_ops::filepath_ops::pathSetDatedFileBaseName("./", "yyyyMMdd_HHmmsszzz", QDateTime::currentDateTime());
+            //     _debug() << lib_utils::io_ops::filepath_ops::pathInsertDatedDirectory("./", "yyyyMMdd", QDate::currentDate());
+            // } catch (const QString & ex) {
+            //     fatalExit(ex);
+            // }
             return 0;
         }
     }),
